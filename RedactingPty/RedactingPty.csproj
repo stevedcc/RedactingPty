@@ -9,7 +9,8 @@
 
   <PropertyGroup>
     <PackageId>RedactingPty</PackageId>
-    <Version>1.0.0</Version>
+    <!-- Overridden by the publish workflow via -p:Version=$PACKAGE_VERSION derived from the git tag. -->
+    <Version>0.0.0-local</Version>
     <Authors>Steve Crawford</Authors>
     <Description>Run a child process inside a cross-platform pseudo-terminal (PTY) while redacting secrets from its output as it streams — Linux, macOS, and Windows (ConPTY), NativeAOT-compatible, no dependencies.</Description>
     <PackageTags>pty;pseudo-terminal;console;redaction;secrets;cross-platform;nativeaot;conpty</PackageTags>

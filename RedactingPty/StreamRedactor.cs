@@ -51,10 +51,14 @@ public sealed class StreamRedactor
         var window  = _tail + chunk;
         var safeLen = Math.Max(0, window.Length - _overlap);
 
-        // A find-string may start before safeLen and end after it, meaning the naive split
-        // would divide it across the emit/tail boundary and neither half would match. Fix:
-        // pull safeLen back to the start of any such straddling match. Repeat until stable
-        // (a pull can expose further straddling matches earlier in the window).
+        // A find-string may start before safeLen and end after it (a "straddling" match):
+        // the naive split would divide it across the emit/tail boundary so neither half
+        // is seen in full. Fix: pull safeLen back to the start of the straddling match.
+        // Because we advance idx++ past the current match start before continuing, a
+        // second straddler beginning one character later in the same scan pass would be
+        // missed. The outer do/while loop re-scans from scratch after any pull-back,
+        // catching those newly-exposed straddlers. Iteration terminates because safeLen
+        // is non-increasing and is bounded below by 0.
         bool adjusted;
         do
         {

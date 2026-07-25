@@ -41,12 +41,17 @@ internal sealed class FallbackPty : IPtyRunner
         process.Start();
 
         var stdout   = Console.OpenStandardOutput();
+        // When stdout is redirected (the only time FallbackPty is reached with a
+        // redirected stream), both stdout and stderr should go to the same destination
+        // so they are interleaved rather than diverging. When stdout is NOT redirected,
+        // Console.OpenStandardError() returns the real terminal stderr stream, which is
+        // independent — no shared lock is needed in that case.
         var stderr   = Console.IsOutputRedirected ? stdout : Console.OpenStandardError();
         var encoding = Console.OutputEncoding;
 
-        // When stderr is merged into stdout both drain tasks share the same Stream instance.
-        // Stream is not guaranteed thread-safe, so a lock is required to prevent interleaved
-        // or corrupted writes. No lock is needed when they target distinct streams.
+        // The lock is only needed when both tasks share the same Stream instance (stdout
+        // redirected case above). When they target distinct streams the writes are
+        // independent and no synchronisation is required.
         var sharedLock = Console.IsOutputRedirected ? new object() : null;
 
         // Drain stdout and stderr concurrently through StreamRedactor to avoid pipe-buffer
@@ -55,6 +60,10 @@ internal sealed class FallbackPty : IPtyRunner
         var stdoutTask = Task.Run(() => Drain(process.StandardOutput.BaseStream, stdout, replacements, encoding, sharedLock));
         var stderrTask = Task.Run(() => Drain(process.StandardError.BaseStream,  stderr, replacements, encoding, sharedLock));
 
+        // WaitForExit() (no-argument overload) waits for the process to exit but does NOT
+        // drain the redirected pipe streams when BaseStream is used directly (only the
+        // Process.StandardOutput.ReadToEnd() / async-read path gets that behaviour).
+        // Task.WaitAll below is therefore essential — it is the true EOF gate.
         process.WaitForExit();
         Task.WaitAll(stdoutTask, stderrTask);
         return process.ExitCode;

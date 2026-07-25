@@ -6,7 +6,7 @@ namespace RedactingPty;
 /// <summary>
 /// Shared POSIX PTY implementation for Linux and macOS. Spawns the child process inside a
 /// pseudo-terminal so programs see a real TTY (enabling colour output, progress bars,
-/// and interactive prompts), while tswap intercepts the master side to apply redaction.
+/// and interactive prompts), while the parent reads the master side to apply redaction.
 ///
 /// Safety: all strings are marshaled to native memory BEFORE forkpty() so the child
 /// never invokes the CLR marshaler. The child calls execvp_native() (async-signal-safe)
@@ -24,7 +24,7 @@ internal abstract class UnixPty : IPtyRunner
     // The byte[] is pinned for the process lifetime so the GC never moves it; the child
     // writes via the IntPtr overload of write() to avoid invoking the P/Invoke marshaler
     // (which re-enters the CLR and is not async-signal-safe / fork-safe).
-    private static readonly byte[]   ExecFailedMsg    = "tswap: exec failed (command not found or not executable)\n"u8.ToArray();
+    private static readonly byte[]   ExecFailedMsg    = "redactingpty: exec failed (command not found or not executable)\n"u8.ToArray();
     private static readonly GCHandle ExecFailedMsgPin = GCHandle.Alloc(ExecFailedMsg, GCHandleType.Pinned);
 
     [StructLayout(LayoutKind.Sequential)]

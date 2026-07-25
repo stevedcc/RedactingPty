@@ -227,8 +227,31 @@ internal sealed class WindowsPty : IPtyRunner
                     int n;
                     while ((n = stdin.Read(buf, 0, buf.Length)) > 0)
                     {
-                        if (!WriteFile(hPipeInWr, buf, (uint)n, out _, IntPtr.Zero))
-                            return; // pipe broken or closed
+                        // WriteFile to an anonymous pipe can return true with fewer bytes
+                        // written than requested (rare but possible). Loop until all bytes
+                        // are written, only treating false as a broken/closed pipe.
+                        int writeOffset = 0;
+                        while (writeOffset < n)
+                        {
+                            byte[] toSend;
+                            uint toWrite;
+                            if (writeOffset == 0)
+                            {
+                                toSend  = buf;
+                                toWrite = (uint)n;
+                            }
+                            else
+                            {
+                                var remaining = n - writeOffset;
+                                toSend  = new byte[remaining];
+                                Buffer.BlockCopy(buf, writeOffset, toSend, 0, remaining);
+                                toWrite = (uint)remaining;
+                            }
+                            if (!WriteFile(hPipeInWr, toSend, toWrite, out uint written, IntPtr.Zero))
+                                return; // pipe broken or closed
+                            if (written == 0) return; // pipe closed
+                            writeOffset += (int)written;
+                        }
                     }
                 }
                 catch { /* stdin closed or pipe broken */ }
@@ -285,7 +308,10 @@ internal sealed class WindowsPty : IPtyRunner
             // capped at 30 s in case descendants keep the console alive — mirroring the
             // UnixPty drain timeout. Output keeps streaming to stdout while we wait.
             var drainDeadline = Environment.TickCount64 + 30_000;
-            long lastCount = -1;
+            // Snapshot the byte count at the moment the child exited so the first
+            // 200 ms interval genuinely measures output produced *after* exit, not
+            // since the read task started.
+            long lastCount = Interlocked.Read(ref totalRead[0]);
             while (Environment.TickCount64 < drainDeadline)
             {
                 Thread.Sleep(200);
