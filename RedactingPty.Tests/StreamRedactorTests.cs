@@ -162,4 +162,68 @@ public class StreamRedactorTests
         Assert.DoesNotContain("superSecret", result);
         Assert.DoesNotContain("[REDACTED: short]", result);
     }
+
+    [Fact]
+    public void SurrogatePairAtEmitBoundary_NotSplit()
+    {
+        // U+1F600 (😀) encodes as a UTF-16 surrogate pair (2 code units).
+        // Verifies that the surrogate-pair boundary guard in ProcessChunk fires
+        // and that the emoji survives intact in the output.
+        var emoji = "\U0001F600";
+        var replacements = Secrets(("pw", "hunter2"));
+        // Feed two chunks such that the emoji and the secret are both present;
+        // the important thing is that the emoji is never torn in output.
+        var result = Process(replacements, "abc" + emoji + "hunte", "r2 end");
+        Assert.DoesNotContain("hunter2", result);
+        Assert.Contains("[REDACTED: pw]", result);
+        Assert.Contains(emoji, result);
+    }
+
+    [Fact]
+    public void FlushAfterNoChunks_ReturnsEmpty()
+    {
+        // Flush on a fresh redactor (no chunks processed) must return "".
+        var r = new StreamRedactor(Secrets(("pw", "hunter2")));
+        Assert.Equal("", r.Flush());
+    }
+
+    [Fact]
+    public void FlushCalledTwice_SecondCallReturnsEmpty()
+    {
+        // Flush must clear the tail; a second Flush must be idempotent.
+        var r = new StreamRedactor(Secrets(("pw", "hunter2")));
+        r.ProcessChunk("hun");
+        var first  = r.Flush();
+        var second = r.Flush();
+        Assert.DoesNotContain("hunter2", first);
+        Assert.Equal("", second);
+    }
+
+    [Fact]
+    public void OverlappingSecretSuffix_LongerAlwaysWins()
+    {
+        // Validates longest-Find-first when the shorter find is a suffix of the longer.
+        var replacements = new List<StreamReplacement>
+        {
+            new("secret",    "[SHORT]"),
+            new("topsecret", "[LONG]"),
+        };
+        var result = Process(replacements, "val=topsecret end");
+        Assert.Contains("[LONG]",   result);
+        Assert.DoesNotContain("topsecret", result);
+        Assert.DoesNotContain("[SHORT]",   result);
+    }
+
+    [Fact]
+    public void EmptyChunkBetweenPartialSecret_DoesNotCorruptTail()
+    {
+        // An empty chunk must be a no-op — the retained tail is unchanged.
+        var replacements = Secrets(("pw", "hunter2"));
+        var r = new StreamRedactor(replacements);
+        r.ProcessChunk("hunte"); // partial — goes into tail
+        r.ProcessChunk(""); // empty — must not lose the tail
+        var result = r.ProcessChunk("r2 end") + r.Flush();
+        Assert.DoesNotContain("hunter2", result);
+        Assert.Contains("[REDACTED: pw]", result);
+    }
 }

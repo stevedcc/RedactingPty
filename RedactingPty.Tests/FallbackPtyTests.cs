@@ -54,4 +54,52 @@ public class FallbackPtyTests
         var result = Drain(input, [new StreamReplacement("hunter2", "[REDACTED: pw]")]);
         Assert.Contains("é after-boundary [REDACTED: pw]", result);
     }
+
+    [Fact]
+    public async Task Drain_WithSharedLock_ConcurrentWritesDontCorrupt()
+    {
+        // Simulates the redirected-stdout scenario: two Drain calls share the
+        // same destination stream and lock. Verifies no torn writes and both
+        // secrets are redacted.
+        var sharedLock = new object();
+        var dest = new MemoryStream();
+        var replacements = new List<StreamReplacement>
+        {
+            new StreamReplacement("hunter2", "[REDACTED: pw]"),
+        };
+
+        var source1 = new MemoryStream(Encoding.UTF8.GetBytes(
+            "stdout: password is hunter2 here\n"));
+        var source2 = new MemoryStream(Encoding.UTF8.GetBytes(
+            "stderr: token is hunter2 there\n"));
+
+        var t1 = Task.Run(() => FallbackPty.Drain(source1, dest, replacements, Encoding.UTF8, sharedLock));
+        var t2 = Task.Run(() => FallbackPty.Drain(source2, dest, replacements, Encoding.UTF8, sharedLock));
+        await Task.WhenAll(t1, t2);
+
+        var output = Encoding.UTF8.GetString(dest.ToArray());
+        Assert.DoesNotContain("hunter2", output);
+        Assert.Equal(2, System.Text.RegularExpressions.Regex.Matches(output, @"\[REDACTED: pw\]").Count);
+    }
+
+    [Fact]
+    public void Drain_EmptyInput_ProducesNoOutput()
+    {
+        var source = new MemoryStream(Array.Empty<byte>());
+        var dest   = new MemoryStream();
+        FallbackPty.Drain(source, dest, [], Encoding.UTF8, writeLock: null);
+        Assert.Equal(0, dest.Length);
+    }
+
+    [Fact]
+    public void Drain_SecretEndingExactlyAtBufferBoundary_Replaced()
+    {
+        // Place the secret so its last byte lands exactly on byte 4096 (0-indexed),
+        // i.e. the secret ends right at the read-buffer boundary.
+        var secret = "hunter2"; // 7 UTF-8 bytes
+        var input  = new string('x', 4096 - secret.Length) + secret + " tail";
+        var result = Drain(input, [new StreamReplacement(secret, "[REDACTED: pw]")]);
+        Assert.DoesNotContain(secret, result);
+        Assert.Contains("[REDACTED: pw] tail", result);
+    }
 }
