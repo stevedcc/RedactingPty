@@ -220,8 +220,8 @@ public class StreamRedactorTests
         // An empty chunk must be a no-op — the retained tail is unchanged.
         var replacements = Secrets(("pw", "hunter2"));
         var r = new StreamRedactor(replacements);
-        r.ProcessChunk("hunte");  // partial — goes into tail
-        r.ProcessChunk("");        // empty — must not lose the tail
+        r.ProcessChunk("hunte"); // partial — goes into tail
+        r.ProcessChunk(""); // empty — must not lose the tail
         var result = r.ProcessChunk("r2 end") + r.Flush();
         Assert.DoesNotContain("hunter2", result);
         Assert.Contains("[REDACTED: pw]", result);
