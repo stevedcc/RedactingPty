@@ -98,17 +98,8 @@ public class FallbackPtyTests
         // i.e. the secret ends right at the read-buffer boundary.
         var secret = "hunter2"; // 7 UTF-8 bytes
         var input  = new string('x', 4096 - secret.Length) + secret + " tail";
-        var result = DrainString(input, [new StreamReplacement(secret, "[REDACTED: pw]")]);
+        var result = Drain(input, [new StreamReplacement(secret, "[REDACTED: pw]")]);
         Assert.DoesNotContain(secret, result);
         Assert.Contains("[REDACTED: pw] tail", result);
-    }
-
-    // Private helper used by the new tests above (mirrors the existing Drain helper in this class).
-    private static string DrainString(string input, IReadOnlyList<StreamReplacement> replacements)
-    {
-        var source = new MemoryStream(Encoding.UTF8.GetBytes(input));
-        var dest   = new MemoryStream();
-        FallbackPty.Drain(source, dest, replacements, Encoding.UTF8, writeLock: null);
-        return Encoding.UTF8.GetString(dest.ToArray());
     }
 }
