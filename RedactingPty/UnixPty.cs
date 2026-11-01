@@ -117,16 +117,16 @@ internal abstract partial class UnixPty : IPtyRunner
 
         // Marshal all argv strings to native memory BEFORE fork so the child never needs
         // to allocate from the managed heap (which may have GC locks from other threads).
-        var nativeStrings = new IntPtr[argv.Length];
+        var nativeStrings = new nint[argv.Length];
         for (int i = 0; i < argv.Length; i++)
             nativeStrings[i] = Marshal.StringToHGlobalAnsi(argv[i]);
 
         // Build null-terminated argv array in native memory: char*[] = { argv[0], ..., NULL }
-        int ptrSize = IntPtr.Size;
+        int ptrSize = nint.Size;
         var nativeArgv = Marshal.AllocHGlobal(ptrSize * (argv.Length + 1));
         for (int i = 0; i < argv.Length; i++)
             Marshal.WriteIntPtr(nativeArgv, i * ptrSize, nativeStrings[i]);
-        Marshal.WriteIntPtr(nativeArgv, argv.Length * ptrSize, IntPtr.Zero);
+        Marshal.WriteIntPtr(nativeArgv, argv.Length * ptrSize, 0);
 
         // Copy the executable pointer to a stack-local so the child can read it without
         // touching the managed nativeStrings array after fork.
