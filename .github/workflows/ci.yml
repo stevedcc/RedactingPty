@@ -11,10 +11,31 @@ env:
 
 jobs:
   build-test:
+    # The PTY tests launch RedactingPty.TestHost as a child process. Each OS runs them against
+    # three hosts, because the Unix runner's forked child behaves differently on each:
+    #   jit-debug   - the host as `dotnet build` makes it (Debug, JIT)
+    #   jit-release - the host built Release (JIT, optimised: inlining differs from Debug)
+    #   aot         - the host published NativeAOT (how tswap ships the library)
+    # W^X stays at the runtime's default (on) in every leg.
+    # ubuntu-latest / jit-debug is the canary for code generated in the forked child (the 1.0.0
+    # crash): it fails reliably when that regresses. macOS (MAP_JIT, private code pages)
+    # and Windows (no fork) pass either way, so don't trim the Linux JIT legs as duplicates.
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+        mode: [jit-debug, jit-release, aot]
+        include:
+          - os: ubuntu-latest
+            rid: linux-x64
+            exe: ""
+          - os: macos-latest   # arm64 runner
+            rid: osx-arm64
+            exe: ""
+          - os: windows-latest
+            rid: win-x64
+            exe: .exe
+    name: ${{ matrix.os }} / ${{ matrix.mode }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -23,11 +44,33 @@ jobs:
         with:
           global-json-file: global.json
 
-      - name: Build
+      - name: Build (Debug)
+        if: matrix.mode != 'jit-release'
         run: dotnet build RedactingPty.slnx
 
-      - name: Test
+      - name: Build (Release)
+        if: matrix.mode == 'jit-release'
+        run: dotnet build RedactingPty.slnx -c Release
+
+      - name: Test (JIT host, Debug)
+        if: matrix.mode == 'jit-debug'
+        run: dotnet test RedactingPty.slnx --no-build
+
+      - name: Test (JIT host, Release)
+        if: matrix.mode == 'jit-release'
+        run: dotnet test RedactingPty.slnx -c Release --no-build
+
+      - name: Publish the test host (NativeAOT)
+        if: matrix.mode == 'aot'
+        run: dotnet publish RedactingPty.TestHost -c Release -r ${{ matrix.rid }} -p:PublishAot=true
+
+      - name: Test (NativeAOT host)
+        if: matrix.mode == 'aot'
+        env:
+          # Absolute: the test process does not run in the repository root.
+          REDACTINGPTY_TESTHOST: ${{ github.workspace }}/RedactingPty.TestHost/bin/Release/net10.0/${{ matrix.rid }}/publish/RedactingPty.TestHost${{ matrix.exe }}
         run: dotnet test RedactingPty.slnx --no-build
 
       - name: Pack (sanity check — not published here)
+        if: matrix.mode == 'jit-debug'
         run: dotnet pack RedactingPty/RedactingPty.csproj -c Release

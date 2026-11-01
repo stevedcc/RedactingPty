@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 
@@ -8,10 +9,25 @@ namespace RedactingPty;
 /// pseudo-terminal so programs see a real TTY (enabling colour output, progress bars,
 /// and interactive prompts), while the parent reads the master side to apply redaction.
 ///
-/// Safety: all strings are marshaled to native memory BEFORE forkpty() so the child
-/// never invokes the CLR marshaler. The child calls execvp_native() (async-signal-safe)
-/// and on failure writes a diagnostic via write_ptr() using a pre-pinned IntPtr buffer,
-/// then calls _exit() — no managed allocation or CLR re-entry on either path.
+/// Fork safety: between forkpty() returning 0 and execvp()/_exit() the child must run no
+/// code the runtime generates, resolves or initialises after fork. On a JIT host the child
+/// shares executable memory with the parent (Linux's W^X maps it from a shared memory object),
+/// while the parent keeps running and allocating code; any IL stub, JIT compilation, lazy
+/// symbol binding, precode patching or type initialiser in the child can then crash it
+/// (SIGSEGV) or corrupt the parent's code. So everything the child executes is prepared in
+/// <see cref="Run"/> before forkpty(): the argv strings are copied to native memory, the type
+/// initialiser is forced, execvp/write/_exit are resolved to raw addresses (in the type
+/// initialiser) and copied into locals as unmanaged function pointers, and the diagnostic's
+/// pinned address and length are copied into locals too. The child branch then only reads
+/// those locals and calls libc directly through the pointers: no P/Invoke stub, no managed
+/// call, no allocation. The pointers are <c>SuppressGCTransition</c> calls, which the JIT
+/// compiles into Run as plain indirect calls (no GC transition, no stub), provided Run is not
+/// debug code: in debug code (DisableOptimizations) every unmanaged call goes through an IL
+/// stub generated on first call, so the project builds this assembly optimised in every
+/// configuration, and Run is <c>AggressiveOptimization</c> so it is compiled fully optimised
+/// once, without Tier0's profiling and patchpoint helper calls. A debugger that disables JIT
+/// optimisation, or a profiler that disables inlined P/Invoke transitions, brings the stub
+/// back. On NativeAOT everything is compiled ahead of time.
 ///
 /// Subclasses override <see cref="Forkpty"/> to supply the platform-specific DllImport
 /// (libc on Linux, libutil on macOS).
@@ -21,11 +37,20 @@ namespace RedactingPty;
 internal abstract class UnixPty : IPtyRunner
 {
     // Message written to stderr when execvp fails in the child after fork().
-    // The byte[] is pinned for the process lifetime so the GC never moves it; the child
-    // writes via the IntPtr overload of write() to avoid invoking the P/Invoke marshaler
-    // (which re-enters the CLR and is not async-signal-safe / fork-safe).
+    // The byte[] is pinned for the process lifetime so the GC never moves it; Run takes its
+    // address and length before fork, and the child passes them to write() as raw values.
     private static readonly byte[]   ExecFailedMsg    = "redactingpty: exec failed (command not found or not executable)\n"u8.ToArray();
     private static readonly GCHandle ExecFailedMsgPin = GCHandle.Alloc(ExecFailedMsg, GCHandleType.Pinned);
+
+    // The libc functions the child calls after fork(), resolved here so the child needs no
+    // lazy P/Invoke binding. "libc" with this assembly and the default search path resolves
+    // exactly as [DllImport("libc")] does (the runtime maps it to the platform's C library:
+    // libc.so.6 on glibc Linux, libSystem via /usr/lib/libc.dylib on macOS).
+    // Run forces this type initialiser before fork; the child reads only Run's locals.
+    private static readonly nint Libc          = NativeLibrary.Load("libc", typeof(UnixPty).Assembly, null);
+    private static readonly nint ExecvpAddress = NativeLibrary.GetExport(Libc, "execvp");
+    private static readonly nint WriteAddress  = NativeLibrary.GetExport(Libc, "write");
+    private static readonly nint ExitAddress   = NativeLibrary.GetExport(Libc, "_exit");
 
     [StructLayout(LayoutKind.Sequential)]
     protected struct Winsize
@@ -33,26 +58,11 @@ internal abstract class UnixPty : IPtyRunner
         public ushort ws_row, ws_col, ws_xpixel, ws_ypixel;
     }
 
-    // execvp using raw IntPtr params so the child never touches managed memory.
-    // path: native char* (full path bypasses PATH lookup).
-    // argv: native char** — pointer to a null-terminated array of char* pointers.
-    [DllImport("libc", EntryPoint = "execvp")]
-    private static extern int execvp_native(IntPtr path, IntPtr argv);
-
-    // Async-signal-safe process exit (does not flush stdio buffers).
-    [DllImport("libc", EntryPoint = "_exit")]
-    private static extern void _exit(int status);
-
     [DllImport("libc", EntryPoint = "read", SetLastError = true)]
     private static extern nint read(int fd, [Out] byte[] buf, nint count);
 
     [DllImport("libc", EntryPoint = "write", SetLastError = true)]
     private static extern nint write(int fd, [In] byte[] buf, nint count);
-
-    // IntPtr overload used in the child after fork() — avoids the P/Invoke marshaler
-    // touching managed memory, which is not async-signal-safe.
-    [DllImport("libc", EntryPoint = "write")]
-    private static extern nint write_ptr(int fd, IntPtr buf, nint count);
 
     [DllImport("libc", EntryPoint = "close")]
     private static extern int close(int fd);
@@ -87,6 +97,10 @@ internal abstract class UnixPty : IPtyRunner
     /// argument list inside a PTY (no shell wrapper), writing redacted output to stdout.
     /// Returns the child process's exit code.
     /// </summary>
+    // AggressiveOptimization: compiled once, fully optimised, never tiered, so Run's code has no
+    // profiling-counter or OSR-patchpoint helper calls (Tier0 code would call one in the child
+    // branch) and no later version replaces it. See the class comment.
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     public int Run(string[] argv, IReadOnlyList<StreamReplacement> replacements)
     {
         if (argv is not { Length: > 0 } || string.IsNullOrEmpty(argv[0]))
@@ -133,19 +147,36 @@ internal abstract class UnixPty : IPtyRunner
         var stdout   = Console.OpenStandardOutput();
         var redactor = new StreamRedactor(replacements);
 
-        int pid = Forkpty(out int masterFd, IntPtr.Zero, IntPtr.Zero, ref winsize);
-
-        if (pid == 0)
+        int pid;
+        int masterFd;
+        unsafe
         {
-            // Child — only async-signal-safe native calls; no managed allocation.
-            // execvp replaces the process image; _exit is the async-signal-safe exit.
-            execvp_native(nativeExe, nativeArgv);
-            // execvp only returns on failure (command not found / not executable).
-            // Write a diagnostic to stderr via the IntPtr overload — avoids the P/Invoke
-            // marshaler (not fork-safe); uses the pre-pinned unmanaged address directly.
-            write_ptr(2, ExecFailedMsgPin.AddrOfPinnedObject(), (nint)ExecFailedMsg.Length);
-            _exit(127);
-            return 0; // unreachable
+            // Prepare everything the child executes, here, before fork (see the class comment).
+            // The type initialiser is beforefieldinit (field initialisers only), so the runtime
+            // may run it at any time before first access: force it explicitly instead.
+            RuntimeHelpers.RunClassConstructor(typeof(UnixPty).TypeHandle);
+            // execvp(file, argv): file is a native char*, argv a native NULL-terminated char**.
+            // execvp searches PATH when file contains no '/'.
+            var childExecvp = (delegate* unmanaged[SuppressGCTransition]<nint, nint, int>)ExecvpAddress;
+            var childWrite  = (delegate* unmanaged[SuppressGCTransition]<int, nint, nint, nint>)WriteAddress;
+            // _exit: async-signal-safe process exit (does not flush stdio buffers).
+            var childExit   = (delegate* unmanaged[SuppressGCTransition]<int, void>)ExitAddress;
+            nint execFailedMsg       = ExecFailedMsgPin.AddrOfPinnedObject();
+            nint execFailedMsgLength = ExecFailedMsg.Length;
+
+            pid = Forkpty(out masterFd, IntPtr.Zero, IntPtr.Zero, ref winsize);
+
+            if (pid == 0)
+            {
+                // Child: reads only the locals above and calls libc through the pointers.
+                // Nothing here may be a managed call, an allocation or a static access.
+                // SuppressGCTransition is safe here: the child has no other threads and no GC.
+                childExecvp(nativeExe, nativeArgv);
+                // execvp only returns on failure (command not found / not executable).
+                childWrite(2, execFailedMsg, execFailedMsgLength);
+                childExit(127);
+                return 0; // unreachable
+            }
         }
 
         // Parent: free native strings (child has its own copy via CoW, replaced by exec).

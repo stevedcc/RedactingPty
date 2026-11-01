@@ -16,6 +16,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\RedactingPty\RedactingPty.csproj" />
+    <!-- Built and copied next to the tests; PtyRunnerTests launch it as a child process. -->
+    <ProjectReference Include="..\RedactingPty.TestHost\RedactingPty.TestHost.csproj" />
   </ItemGroup>
 
 </Project>

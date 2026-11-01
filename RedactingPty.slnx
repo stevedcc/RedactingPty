@@ -1,4 +1,5 @@
 <Solution>
   <Project Path="RedactingPty/RedactingPty.csproj" />
+  <Project Path="RedactingPty.TestHost/RedactingPty.TestHost.csproj" />
   <Project Path="RedactingPty.Tests/RedactingPty.Tests.csproj" />
 </Solution>
