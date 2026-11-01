@@ -9,8 +9,9 @@
 
   <PropertyGroup>
     <PackageId>RedactingPty</PackageId>
-    <!-- Overridden by the publish workflow via -p:Version=$PACKAGE_VERSION derived from the git tag. -->
-    <Version>0.0.0-local</Version>
+    <!-- Overridden by the publish workflow via -p:Version=$PACKAGE_VERSION derived from the git tag.
+         Not lower than the package-validation baseline (1.0.0), or validation rejects it (CP0003). -->
+    <Version>1.0.1-local</Version>
     <Authors>Steve Crawford</Authors>
     <Description>Run a child process inside a cross-platform pseudo-terminal (PTY) while redacting secrets from its output as it streams — Linux, macOS, and Windows (ConPTY), NativeAOT-compatible, no dependencies.</Description>
     <PackageTags>pty;pseudo-terminal;console;redaction;secrets;cross-platform;nativeaot;conpty</PackageTags>
@@ -22,8 +23,17 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
   </PropertyGroup>
 
+  <PropertyGroup>
+    <!-- Public API guard: `dotnet pack` fails on any API change against the published 1.0.0. -->
+    <EnablePackageValidation>true</EnablePackageValidation>
+    <PackageValidationBaselineVersion>1.0.0</PackageValidationBaselineVersion>
+  </PropertyGroup>
+
   <ItemGroup>
     <InternalsVisibleTo Include="RedactingPty.Tests" />
+    <!-- The test host constructs the real PTY runners directly (PtyRunnerFactory picks
+         FallbackPty when stdio is redirected, as it is under the tests). -->
+    <InternalsVisibleTo Include="RedactingPty.TestHost" />
   </ItemGroup>
 
   <ItemGroup>
