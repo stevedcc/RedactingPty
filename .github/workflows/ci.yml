@@ -18,7 +18,7 @@ jobs:
     #   aot         - the host published NativeAOT (how tswap ships the library)
     # W^X stays at the runtime's default (on) in every leg.
     # ubuntu-latest / jit-debug is the canary for code generated in the forked child (the 1.0.0
-    # crash): it fails deterministically when that regresses. macOS (MAP_JIT, private code pages)
+    # crash): it fails reliably when that regresses. macOS (MAP_JIT, private code pages)
     # and Windows (no fork) pass either way, so don't trim the Linux JIT legs as duplicates.
     strategy:
       fail-fast: false

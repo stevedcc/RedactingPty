@@ -73,7 +73,8 @@ any position, is seen in full. Additional care:
 The forked child must run no code generated after `fork()`. With W^X on (the .NET
 default), Linux maps JIT code as shared memory, so a child that compiles a stub, binds a
 P/Invoke lazily or runs a type initializer races the still-running parent and can crash
-(1.0.0 did, with exit 139, on JIT hosts; NativeAOT hosts were unaffected). So:
+(1.0.0 did, with exit 139, on Linux JIT hosts; NativeAOT hosts, macOS and Windows were
+unaffected). So:
 
 - `execvp`, `write` and `_exit` are resolved with `NativeLibrary` in the parent and called
   from the child through unmanaged function pointers held in locals; the type initializer
@@ -84,8 +85,8 @@ P/Invoke lazily or runs a type initializer races the still-running parent and ca
   first call, which would be in the child.
 
 **Known limitations:** a debugger that suppresses JIT optimisation for the library, or a
-profiler that forces debug code, brings that stub back, so the child can crash under them
-on Linux. musl (Alpine) is untested. If a garbage collection is suspending threads at the
+profiler that disables inlined P/Invoke transitions (even with optimisation on), brings
+that stub back, so the child can crash under them on Linux. musl (Alpine) is untested. If a garbage collection is suspending threads at the
 exact moment of the fork, the child can hang in the runtime's return path and the parent
 waits for it indefinitely (rare; present since 1.0.0; tracked in the issues).
 
