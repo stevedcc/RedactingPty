@@ -1,7 +1,8 @@
 # Brief R2: RedactingPty tested on .NET 11 (RC 3 now, GA SDK on release day)
 
 Same rules as R1 (one commit per item, build warning-free and tests green after each, no new
-packages, never download or install an SDK: the .NET 11 RC 3 SDK `11.0.100-rc.3.26522.148` is in
+packages (restoring the .NET 11 `Microsoft.DotNet.ILCompiler` from nuget.org for the AOT check is
+a package restore and allowed, as in R1), never download or install an SDK: the .NET 11 RC 3 SDK `11.0.100-rc.3.26522.148` is in
 `~/dotnet`).
 
 ## Why

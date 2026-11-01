@@ -29,7 +29,7 @@ Counts on `main` (`e845846`), production code (`RedactingPty/`):
 | Older form | Count |
 |---|---|
 | `[DllImport]` (UnixPty 8, LinuxPty 2, MacOSPty 1, WindowsPty 12) | 23 (no `[LibraryImport]`) |
-| `IntPtr` as a token (`Marshal.WriteIntPtr` not counted; `nint` appears 9 times) | 86 |
+| `IntPtr` as a type token in code (comments and `Marshal.WriteIntPtr` not counted; `nint` appears 9 times) | 83 |
 | `new object()` as a lock (`FallbackPty.cs`) | 1 |
 | `throw new Exception(...)` | 10 |
 | catch-all `catch { ... }` (no exception type) | 5 |
@@ -46,7 +46,7 @@ Counts on `main` (`e845846`), production code (`RedactingPty/`):
   (constructor, `ProcessChunk`, `Flush`), `StreamReplacement`. Package validation (below) enforces
   it against the published 1.0.0.
 - **Exception types and messages unchanged** (callers may catch them): the ten
-  `throw new Exception(...)` stay `Exception` with the same text. Item 6 reviews them, report only.
+  `throw new Exception(...)` stay `Exception` with the same text. Item 5 reviews them, report only.
 - **Fork safety is the hard constraint.** The child block (`UnixPty.Run`'s `if (pid == 0)`
   branch, between `forkpty` returning 0 and `execvp`/`_exit`) **keeps exactly the calls it makes
   today, no more**: `execvp_native`, `ExecFailedMsgPin.AddrOfPinnedObject()`, `ExecFailedMsg.Length`,
@@ -66,6 +66,8 @@ Counts on `main` (`e845846`), production code (`RedactingPty/`):
   `<PackageValidationBaselineVersion>1.0.0</PackageValidationBaselineVersion>` in the library
   csproj (built into the SDK, no new package; restoring the 1.0.0 baseline from nuget.org is
   allowed). From then on `dotnet pack` (CI's pack step runs it) fails on any public API change.
+  If the validator rejects the csproj's `<Version>0.0.0-local</Version>` as lower than the
+  baseline, set it to `1.0.1-local` (the publish workflow still overrides it from the tag).
 - Tests change only where item 1 adds them. Never change an existing test's assertion.
 - `writing-dotnet10-code`'s Discipline line "tests go through public behaviour: no
   `InternalsVisibleTo`" is **overridden here on purpose**: the library already grants
@@ -166,7 +168,7 @@ asks for it, and say so.
   keep that one as `DllImport` and say why.
 - `LinuxPty`'s `libc`/`libutil` probe and fallback stay exactly as they are.
 
-### Item 3: `nint` for native handles and sizes (68 `IntPtr`)
+### Item 3: `nint` for native handles and sizes (83 `IntPtr`)
 
 `IntPtr` → `nint`, `IntPtr.Zero` → `0`, `new IntPtr(x)` → `(nint)x`, `IntPtr.Size` → `nint.Size`,
 where it is a pointer, handle or size in a P/Invoke signature, struct field or local. Identical
