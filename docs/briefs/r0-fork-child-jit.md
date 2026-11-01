@@ -111,7 +111,10 @@ Design is yours, guided by item 2; state why it is sufficient on each host, macO
   (minopts); for blittable signatures it should not. `delegate* unmanaged[SuppressGCTransition]`
   is optional: if you use it, show it compiles, and use it only for the child-side calls (its
   rules forbid blocking calls, which the parent side has);
-- run `UnixPty`'s type initializer in the parent before `fork` and keep everything the child reads
+- run `UnixPty`'s type initializer in the parent before `fork`, **explicitly** (e.g.
+  `RuntimeHelpers.RunClassConstructor(typeof(UnixPty).TypeHandle)` or reading the statics): the
+  type has only field initializers, so it is `beforefieldinit` and the runtime may run it at any
+  point before first access; don't rely on ordering. Keep everything the child reads
   (the resolved pointers, the message address and length) in locals or already-initialised statics;
   compute `ExecFailedMsgPin.AddrOfPinnedObject()` and the length before `fork`;
 - `posix_spawn` instead of `forkpty` (controlling-terminal setup differs between Linux and macOS;
