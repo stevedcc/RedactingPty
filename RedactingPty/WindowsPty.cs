@@ -367,7 +367,7 @@ internal sealed partial class WindowsPty : IPtyRunner
     }
 
     // Static to avoid allocating a new char[] on every call to WindowsQuoteArg.
-    private static readonly char[] QuoteNeededChars = { ' ', '\t', '"' };
+    private static readonly char[] QuoteNeededChars = [' ', '\t', '"'];
 
     private static string WindowsQuoteArg(string arg)
     {
