@@ -13,7 +13,7 @@ namespace RedactingPty;
 /// the behaviour of the POSIX forkpty() implementations on Linux and macOS.
 /// </summary>
 [SupportedOSPlatform("windows")]
-internal sealed class WindowsPty : IPtyRunner
+internal sealed partial class WindowsPty : IPtyRunner
 {
     [StructLayout(LayoutKind.Sequential)]
     private struct COORD
@@ -25,28 +25,28 @@ internal sealed class WindowsPty : IPtyRunner
     private struct STARTUPINFO
     {
         public int    cb;
-        public IntPtr lpReserved;   // LPWSTR — always null
-        public IntPtr lpDesktop;    // LPWSTR — null = inherit
-        public IntPtr lpTitle;      // LPWSTR — null = inherit
+        public nint   lpReserved;   // LPWSTR — always null
+        public nint   lpDesktop;    // LPWSTR — null = inherit
+        public nint   lpTitle;      // LPWSTR — null = inherit
         public int    dwX, dwY, dwXSize, dwYSize;
         public int    dwXCountChars, dwYCountChars;
         public int    dwFillAttribute, dwFlags;
         public short  wShowWindow, cbReserved2;
-        public IntPtr lpReserved2;  // LPBYTE — always null
-        public IntPtr hStdInput, hStdOutput, hStdError;
+        public nint   lpReserved2;  // LPBYTE — always null
+        public nint   hStdInput, hStdOutput, hStdError;
     }
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     private struct STARTUPINFOEX
     {
         public STARTUPINFO StartupInfo;
-        public IntPtr      lpAttributeList;
+        public nint        lpAttributeList;
     }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct PROCESS_INFORMATION
     {
-        public IntPtr hProcess, hThread;
+        public nint   hProcess, hThread;
         public int    dwProcessId, dwThreadId;
     }
 
@@ -54,8 +54,8 @@ internal sealed class WindowsPty : IPtyRunner
     private struct SECURITY_ATTRIBUTES
     {
         public int    nLength;
-        public IntPtr lpSecurityDescriptor;
-        public bool   bInheritHandle;
+        public nint   lpSecurityDescriptor;
+        public int    bInheritHandle; // BOOL; int keeps the struct blittable (never set: FALSE)
     }
 
     private const uint EXTENDED_STARTUPINFO_PRESENT        = 0x00080000;
@@ -64,63 +64,73 @@ internal sealed class WindowsPty : IPtyRunner
     private const uint INFINITE                            = 0xFFFFFFFF;
     private const uint WAIT_FAILED                         = 0xFFFFFFFF;
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool CreatePipe(
-        out IntPtr hReadPipe, out IntPtr hWritePipe,
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool CreatePipe(
+        out nint hReadPipe, out nint hWritePipe,
         ref SECURITY_ATTRIBUTES lpPipeAttributes, uint nSize);
 
     // Returns HRESULT: S_OK (0) on success, negative on failure.
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern int CreatePseudoConsole(
-        COORD size, IntPtr hInput, IntPtr hOutput, uint dwFlags, out IntPtr hPC);
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    private static partial int CreatePseudoConsole(
+        COORD size, nint hInput, nint hOutput, uint dwFlags, out nint hPC);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern void ClosePseudoConsole(IntPtr hPC);
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    private static partial void ClosePseudoConsole(nint hPC);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool InitializeProcThreadAttributeList(
-        IntPtr lpAttributeList, int dwAttributeCount, int dwFlags, ref IntPtr lpSize);
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool InitializeProcThreadAttributeList(
+        nint lpAttributeList, int dwAttributeCount, int dwFlags, ref nint lpSize);
 
     // For PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, lpValue carries the HPCON handle VALUE
     // itself (the consumer does not dereference it) — matching Microsoft's ConPTY sample.
     // Passing a pointer-to-handle makes the child treat the pointer as its HPCON and die
     // during init with STATUS_DLL_INIT_FAILED (0xC0000142); caught by the ConPTY E2E test.
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool UpdateProcThreadAttribute(
-        IntPtr lpAttributeList, uint dwFlags, IntPtr Attribute,
-        IntPtr lpValue, IntPtr cbSize,
-        IntPtr lpPreviousValue, IntPtr lpReturnSize);
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool UpdateProcThreadAttribute(
+        nint lpAttributeList, uint dwFlags, nint Attribute,
+        nint lpValue, nint cbSize,
+        nint lpPreviousValue, nint lpReturnSize);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern void DeleteProcThreadAttributeList(IntPtr lpAttributeList);
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    private static partial void DeleteProcThreadAttributeList(nint lpAttributeList);
 
     // lpCommandLine must be a mutable buffer — Windows may write to it in some edge cases.
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern bool CreateProcess(
+    // The generator pins the char[] and passes it in place. LibraryImport does no A/W suffix
+    // probing, so the Unicode entry point is named explicitly.
+    [LibraryImport("kernel32.dll", EntryPoint = "CreateProcessW", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool CreateProcess(
         string? lpApplicationName, [In] char[] lpCommandLine,
-        IntPtr lpProcessAttributes, IntPtr lpThreadAttributes,
-        bool bInheritHandles, uint dwCreationFlags,
-        IntPtr lpEnvironment, string? lpCurrentDirectory,
+        nint lpProcessAttributes, nint lpThreadAttributes,
+        [MarshalAs(UnmanagedType.Bool)] bool bInheritHandles, uint dwCreationFlags,
+        nint lpEnvironment, string? lpCurrentDirectory,
         ref STARTUPINFOEX lpStartupInfo, out PROCESS_INFORMATION lpProcessInformation);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern uint WaitForSingleObject(IntPtr hHandle, uint dwMilliseconds);
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    private static partial uint WaitForSingleObject(nint hHandle, uint dwMilliseconds);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool GetExitCodeProcess(IntPtr hProcess, out uint lpExitCode);
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool GetExitCodeProcess(nint hProcess, out uint lpExitCode);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool CloseHandle(IntPtr hObject);
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool CloseHandle(nint hObject);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool ReadFile(
-        IntPtr hFile, [Out] byte[] lpBuffer, uint nNumberOfBytesToRead,
-        out uint lpNumberOfBytesRead, IntPtr lpOverlapped);
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool ReadFile(
+        nint hFile, [Out] byte[] lpBuffer, uint nNumberOfBytesToRead,
+        out uint lpNumberOfBytesRead, nint lpOverlapped);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool WriteFile(
-        IntPtr hFile, [In] byte[] lpBuffer, uint nNumberOfBytesToWrite,
-        out uint lpNumberOfBytesWritten, IntPtr lpOverlapped);
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool WriteFile(
+        nint hFile, [In] byte[] lpBuffer, uint nNumberOfBytesToWrite,
+        out uint lpNumberOfBytesWritten, nint lpOverlapped);
 
     /// <summary>
     /// Directly executes <paramref name="argv"/>[0] with the remaining elements as its
@@ -143,13 +153,13 @@ internal sealed class WindowsPty : IPtyRunner
 
         // Pre-declare all handles as Zero so the finally block can safely close whatever
         // was successfully opened, regardless of where an exception is thrown.
-        var hPipeInRd  = IntPtr.Zero;
-        var hPipeInWr  = IntPtr.Zero;
-        var hPipeOutRd = IntPtr.Zero;
-        var hPipeOutWr = IntPtr.Zero;
-        var hPC        = IntPtr.Zero;
-        var attrList   = IntPtr.Zero;
-        var hProcess   = IntPtr.Zero;
+        nint hPipeInRd  = 0;
+        nint hPipeInWr  = 0;
+        nint hPipeOutRd = 0;
+        nint hPipeOutWr = 0;
+        nint hPC        = 0;
+        nint attrList   = 0;
+        nint hProcess   = 0;
         bool attrListInitialized = false;
 
         try
@@ -169,22 +179,22 @@ internal sealed class WindowsPty : IPtyRunner
                 throw new Exception($"CreatePseudoConsole failed (HRESULT 0x{hpcHr:X8})");
 
             // The ConPTY now owns those ends — null our copies so finally won't double-close.
-            CloseHandle(hPipeInRd);  hPipeInRd  = IntPtr.Zero;
-            CloseHandle(hPipeOutWr); hPipeOutWr = IntPtr.Zero;
+            CloseHandle(hPipeInRd);  hPipeInRd  = 0;
+            CloseHandle(hPipeOutWr); hPipeOutWr = 0;
 
             // Build a process-thread attribute list containing the ConPTY handle.
-            IntPtr attrListSize = IntPtr.Zero;
-            InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref attrListSize);
+            nint attrListSize = 0;
+            InitializeProcThreadAttributeList(0, 1, 0, ref attrListSize);
             attrList = Marshal.AllocHGlobal(attrListSize);
             if (!InitializeProcThreadAttributeList(attrList, 1, 0, ref attrListSize))
                 throw new Exception("InitializeProcThreadAttributeList failed");
             attrListInitialized = true;
 
-            // Pass the HPCON value directly (not a pointer to it) — see DllImport note.
+            // Pass the HPCON value directly (not a pointer to it) — see the import's note.
             if (!UpdateProcThreadAttribute(attrList, 0,
-                    new IntPtr(PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE),
-                    hPC, new IntPtr(IntPtr.Size),
-                    IntPtr.Zero, IntPtr.Zero))
+                    (nint)PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
+                    hPC, (nint)nint.Size,
+                    0, 0))
                 throw new Exception("UpdateProcThreadAttribute failed");
 
             // STARTF_USESTDHANDLES with null handles (Windows Terminal's ConptyConnection
@@ -209,8 +219,8 @@ internal sealed class WindowsPty : IPtyRunner
             cmdStr.CopyTo(0, cmdLine, 0, cmdStr.Length);
 
             if (!CreateProcess(null, cmdLine,
-                    IntPtr.Zero, IntPtr.Zero, false,
-                    EXTENDED_STARTUPINFO_PRESENT, IntPtr.Zero, null,
+                    0, 0, false,
+                    EXTENDED_STARTUPINFO_PRESENT, 0, null,
                     ref si, out var pi))
                 throw new Exception($"CreateProcess failed (Win32 error {Marshal.GetLastWin32Error()})");
 
@@ -247,7 +257,7 @@ internal sealed class WindowsPty : IPtyRunner
                                 Buffer.BlockCopy(buf, writeOffset, toSend, 0, remaining);
                                 toWrite = (uint)remaining;
                             }
-                            if (!WriteFile(hPipeInWr, toSend, toWrite, out uint written, IntPtr.Zero))
+                            if (!WriteFile(hPipeInWr, toSend, toWrite, out uint written, 0))
                                 return; // pipe broken or closed
                             if (written == 0) return; // pipe closed
                             writeOffset += (int)written;
@@ -275,7 +285,7 @@ internal sealed class WindowsPty : IPtyRunner
             var totalRead = new long[1]; // Interlocked counter shared with the drain loop below
             var readTask = Task.Run(() =>
             {
-                while (ReadFile(hPipeOutRd, readBuf, (uint)readBuf.Length, out uint nRead, IntPtr.Zero) && nRead > 0)
+                while (ReadFile(hPipeOutRd, readBuf, (uint)readBuf.Length, out uint nRead, 0) && nRead > 0)
                 {
                     Interlocked.Add(ref totalRead[0], nRead);
                     var charCount = decoder.GetChars(readBuf, 0, (int)nRead, charBuf, 0);
@@ -323,21 +333,21 @@ internal sealed class WindowsPty : IPtyRunner
 
             // Close the ConPTY to signal EOF to the read task.
             ClosePseudoConsole(hPC);
-            hPC = IntPtr.Zero; // prevent double-close in finally
+            hPC = 0; // prevent double-close in finally
 
             readTask.Wait(); // drain any buffered output before returning
             return (int)exitCode;
         }
         finally
         {
-            if (hProcess   != IntPtr.Zero) CloseHandle(hProcess);
-            if (hPipeInWr  != IntPtr.Zero) CloseHandle(hPipeInWr);
-            if (hPipeOutRd != IntPtr.Zero) CloseHandle(hPipeOutRd);
-            if (hPipeInRd  != IntPtr.Zero) CloseHandle(hPipeInRd);
-            if (hPipeOutWr != IntPtr.Zero) CloseHandle(hPipeOutWr);
-            if (hPC        != IntPtr.Zero) ClosePseudoConsole(hPC);
-            if (attrListInitialized)       DeleteProcThreadAttributeList(attrList);
-            if (attrList   != IntPtr.Zero) Marshal.FreeHGlobal(attrList);
+            if (hProcess   != 0)     CloseHandle(hProcess);
+            if (hPipeInWr  != 0)     CloseHandle(hPipeInWr);
+            if (hPipeOutRd != 0)     CloseHandle(hPipeOutRd);
+            if (hPipeInRd  != 0)     CloseHandle(hPipeInRd);
+            if (hPipeOutWr != 0)     CloseHandle(hPipeOutWr);
+            if (hPC        != 0)     ClosePseudoConsole(hPC);
+            if (attrListInitialized) DeleteProcThreadAttributeList(attrList);
+            if (attrList   != 0)     Marshal.FreeHGlobal(attrList);
         }
     }
 
@@ -357,7 +367,7 @@ internal sealed class WindowsPty : IPtyRunner
     }
 
     // Static to avoid allocating a new char[] on every call to WindowsQuoteArg.
-    private static readonly char[] QuoteNeededChars = { ' ', '\t', '"' };
+    private static readonly char[] QuoteNeededChars = [' ', '\t', '"'];
 
     private static string WindowsQuoteArg(string arg)
     {

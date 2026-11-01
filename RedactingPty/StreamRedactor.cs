@@ -34,7 +34,7 @@ public sealed class StreamRedactor
         // Defensive longest-Find-first sort: a shorter Find that shares a prefix with a
         // longer one must not clobber it. Callers typically pass a pre-sorted list, but
         // re-sorting is cheap and makes the class safe to use standalone.
-        _replacements = replacements.OrderByDescending(r => r.Find.Length).ToList();
+        _replacements = [.. replacements.OrderByDescending(r => r.Find.Length)];
         // Retain (longestFind - 1) chars between chunks: the minimum overlap that guarantees
         // any single find-string, split at any position, is still seen in full.
         _overlap = _replacements.Count > 0 ? Math.Max(0, _replacements[0].Find.Length - 1) : 0;

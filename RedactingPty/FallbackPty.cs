@@ -52,7 +52,7 @@ internal sealed class FallbackPty : IPtyRunner
         // The lock is only needed when both tasks share the same Stream instance (stdout
         // redirected case above). When they target distinct streams the writes are
         // independent and no synchronisation is required.
-        var sharedLock = Console.IsOutputRedirected ? new object() : null;
+        var sharedLock = Console.IsOutputRedirected ? new Lock() : null;
 
         // Drain stdout and stderr concurrently through StreamRedactor to avoid pipe-buffer
         // deadlocks when the child writes to both streams. Reading them sequentially could
@@ -74,7 +74,7 @@ internal sealed class FallbackPty : IPtyRunner
     internal static void Drain(
         Stream source, Stream dest,
         IReadOnlyList<StreamReplacement> replacements,
-        Encoding encoding, object? writeLock)
+        Encoding encoding, Lock? writeLock)
     {
         var readBuf  = new byte[4096];
         var decoder  = encoding.GetDecoder();
@@ -85,7 +85,7 @@ internal sealed class FallbackPty : IPtyRunner
         {
             var charCount = decoder.GetChars(readBuf, 0, n, charBuf, 0);
             var outBytes  = encoding.GetBytes(redactor.ProcessChunk(new string(charBuf, 0, charCount)));
-            if (writeLock != null)
+            if (writeLock is not null)
                 lock (writeLock) dest.Write(outBytes);
             else
                 dest.Write(outBytes);
@@ -94,7 +94,7 @@ internal sealed class FallbackPty : IPtyRunner
         if (tail.Length > 0)
         {
             var tailBytes = encoding.GetBytes(tail);
-            if (writeLock != null)
+            if (writeLock is not null)
                 lock (writeLock) dest.Write(tailBytes);
             else
                 dest.Write(tailBytes);

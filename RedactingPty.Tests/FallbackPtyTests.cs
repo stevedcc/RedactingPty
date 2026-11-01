@@ -61,7 +61,7 @@ public class FallbackPtyTests
         // Simulates the redirected-stdout scenario: two Drain calls share the
         // same destination stream and lock. Verifies no torn writes and both
         // secrets are redacted.
-        var sharedLock = new object();
+        var sharedLock = new Lock();
         var dest = new MemoryStream();
         var replacements = new List<StreamReplacement>
         {
