@@ -59,8 +59,10 @@ Counts on `main` (`5d9a8fa`), production code (`RedactingPty/`):
   parent code and **not** frozen. README "Fork safety" explains why the rest is: unoptimised code
   routes even function-pointer calls through a stub built on first call, in the child, and any
   extra managed call there reintroduces the 1.0.0 crash. **Check, in the report:** extract each
-  span at `5d9a8fa` and at your final commit by its first and last line's text (line numbers above
-  may shift once earlier code changes) and show that `diff` prints nothing.
+  span at `5d9a8fa` and at your final commit, starting from its first line's text and ending at the
+  matching closing brace or the span's last statement (line numbers above may shift once earlier
+  code changes; several spans end in a bare `}`, so don't anchor on the last line alone), and show
+  that `diff` prints nothing.
 - **The tests from R0 are the safety net:** `PtyRunnerTests` (real child through each runner) and
   the CI matrix (Debug JIT, Release JIT, NativeAOT × ubuntu, macOS, Windows). ubuntu / jit-debug is
   the canary for code generated in the child. All nine legs stay green after every item; the
@@ -84,8 +86,8 @@ The real-PTY characterization tests, the test host, the CI matrix and package va
 
 ### Item 2: `LibraryImport` instead of `DllImport` (17 of 20; `forkpty` stays `DllImport`)
 
-`[LibraryImport]` with `static partial` methods; the containing types (`UnixPty`, `LinuxPty`,
-`MacOSPty`, `WindowsPty`) become `partial`. Keep each library name, entry point and `SetLastError`
+`[LibraryImport]` with `static partial` methods; `UnixPty` and `WindowsPty` become `partial`
+(`LinuxPty` and `MacOSPty` hold only the frozen `forkpty` imports and stay as they are). Keep each library name, entry point and `SetLastError`
 exactly as today. Read the generated stubs with `-p:EmitCompilerGeneratedFiles=true` (under
 `obj/.../generated/`); don't commit that setting. `<AllowUnsafeBlocks>` is already set (R0); keep
 it.
