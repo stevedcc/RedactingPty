@@ -5,13 +5,6 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsAotCompatible>true</IsAotCompatible>
-    <!-- UnixPty calls libc through unmanaged function pointers in the forked child. -->
-    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <!-- Optimised in every configuration, Debug included: in debug code (DisableOptimizations)
-         the JIT routes every unmanaged call, function pointers included, through an IL stub it
-         generates on first call, which for UnixPty's forked child means code generation after
-         fork (see UnixPty's class comment). -->
-    <Optimize>true</Optimize>
   </PropertyGroup>
 
   <PropertyGroup>
