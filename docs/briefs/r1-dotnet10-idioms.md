@@ -23,8 +23,8 @@ Counts on `main` (`5d9a8fa`), production code (`RedactingPty/`):
 
 | Older form | Count |
 |---|---|
-| `[DllImport]` (UnixPty 5: `read`, `write`, `close`, `waitpid`, `poll`; LinuxPty 2 and MacOSPty 1: `forkpty`; WindowsPty 12) | 20 (no `[LibraryImport]`) |
-| `IntPtr` as a type token in code (comments and `Marshal.WriteIntPtr` not counted) | 80 |
+| `[DllImport]` (UnixPty 5: `read`, `write`, `close`, `waitpid`, `poll`; LinuxPty 2 and MacOSPty 1: `forkpty`, frozen; WindowsPty 12) | 20, of which 17 convertible (no `[LibraryImport]`) |
+| `IntPtr` as a type token in code (comments and `Marshal.WriteIntPtr` not counted) | 80, of which 14 in frozen spans (`UnixPty` 93 ×2 and 167 ×2, `LinuxPty` 6, `MacOSPty` 4), so 66 convertible |
 | `new object()` as a lock (`FallbackPty.cs`) | 1 |
 | `throw new Exception(...)` | 10 |
 | catch-all `catch { ... }` (no exception type) | 5 |
@@ -42,23 +42,38 @@ Counts on `main` (`5d9a8fa`), production code (`RedactingPty/`):
   published 1.0.0 is already on (R0); CI's pack step fails on any public API change.
 - **Exception types and messages unchanged** (callers may catch them): the ten
   `throw new Exception(...)` stay `Exception` with the same text. Item 5 reviews them, report only.
-- **The fork-child path is frozen (R0's mechanism).** Everything in `UnixPty.Run` from the
-  explicit `RuntimeHelpers.RunClassConstructor` call before `Forkpty`, the three
-  `delegate* unmanaged[SuppressGCTransition]` locals (`execvp`, `write`, `_exit`) and the message
-  address/length locals, through the `if (pid == 0)` branch, stays exactly as it is, and so do the
-  static fields holding the resolved addresses, the `[MethodImpl(AggressiveOptimization)]` on
-  `Run`, and `<Optimize>true</Optimize>` in the library csproj (README "Fork safety" explains why:
-  unoptimised code routes even function-pointer calls through a stub built on first call, in the
-  child). Don't move, rename or re-spell anything there, not even `IntPtr` → `nint` (item 3) or a
-  `using`, since any extra managed call in the child reintroduces the 1.0.0 crash.
+- **The fork-child path is frozen (R0's mechanism), spelling included.** These spans, as they are
+  at `5d9a8fa`, stay byte-identical (no `IntPtr` → `nint`, no renames, no reformatting, no moved
+  lines, no added or removed `using` they depend on):
+  - `UnixPty.cs` 39–59: `ExecFailedMsg`, `ExecFailedMsgPin`, `Libc`, `ExecvpAddress`,
+    `WriteAddress`, `ExitAddress`, and the `Winsize` struct;
+  - `UnixPty.cs` 88–93: the `Forkpty` declaration and its doc comment;
+  - `UnixPty.cs` 100–104: the `AggressiveOptimization` comment, attribute and `Run`'s signature;
+  - `UnixPty.cs` 150–180: from `int pid;` to the closing brace of the `unsafe` block (the explicit
+    `RuntimeHelpers.RunClassConstructor`, the locals `childExecvp`, `childWrite`, `childExit`,
+    `execFailedMsg`, `execFailedMsgLength`, the `Forkpty` call and the `if (pid == 0)` branch);
+  - `LinuxPty.cs` 14–34 and `MacOSPty.cs` 12–16: the `forkpty` imports, `LinuxPty`'s probe and both
+    `Forkpty` overrides;
+  - the library csproj's `<Optimize>true</Optimize>` and `<AllowUnsafeBlocks>true</AllowUnsafeBlocks>`.
+  The argv marshalling before the fork (`UnixPty.cs` 118–133, `nativeStrings`/`nativeArgv`) is
+  parent code and **not** frozen. README "Fork safety" explains why the rest is: unoptimised code
+  routes even function-pointer calls through a stub built on first call, in the child, and any
+  extra managed call there reintroduces the 1.0.0 crash. **Check, in the report:** extract each
+  span at `5d9a8fa` and at your final commit by its first and last line's text (line numbers above
+  may shift once earlier code changes) and show that `diff` prints nothing.
 - **The tests from R0 are the safety net:** `PtyRunnerTests` (real child through each runner) and
   the CI matrix (Debug JIT, Release JIT, NativeAOT × ubuntu, macOS, Windows). ubuntu / jit-debug is
   the canary for code generated in the child. All nine legs stay green after every item; the
   controller pushes and reads them.
 - Keep AOT clean: `dotnet publish RedactingPty.TestHost -c Release -r linux-x64 -p:PublishAot=true`
   reports 0 AOT/trim warnings before your first commit and at the end.
-- Tests change only where a signature change forces it (item 4). Never change an existing test's
-  assertion.
+- Tests change only where a signature change forces it (items 2–4). Never change an existing
+  test's assertion.
+- If your counts differ from the table above, say so in the report before relying on them.
+- `writing-dotnet10-code`'s Discipline line "tests go through public behaviour: no
+  `InternalsVisibleTo`" stays overridden on purpose: the library grants `InternalsVisibleTo` to
+  `RedactingPty.Tests` and `RedactingPty.TestHost`, because the real-PTY runners can't be reached
+  through `PtyRunnerFactory` when stdout is redirected.
 
 ## Items
 
@@ -67,13 +82,13 @@ Counts on `main` (`5d9a8fa`), production code (`RedactingPty/`):
 The real-PTY characterization tests, the test host, the CI matrix and package validation are on
 `main`. Nothing to do; this numbering is kept so the report lines up with the earlier review.
 
-### Item 2: `LibraryImport` instead of `DllImport` (20 sites)
+### Item 2: `LibraryImport` instead of `DllImport` (17 of 20; `forkpty` stays `DllImport`)
 
 `[LibraryImport]` with `static partial` methods; the containing types (`UnixPty`, `LinuxPty`,
 `MacOSPty`, `WindowsPty`) become `partial`. Keep each library name, entry point and `SetLastError`
 exactly as today. Read the generated stubs with `-p:EmitCompilerGeneratedFiles=true` (under
-`obj/.../generated/`); don't commit that setting. Add `<AllowUnsafeBlocks>` only if the compiler
-asks for it, and say so.
+`obj/.../generated/`); don't commit that setting. `<AllowUnsafeBlocks>` is already set (R0); keep
+it.
 - **`CreateProcess`:** today `CharSet.Unicode` makes `DllImport` resolve `CreateProcessW`;
   `LibraryImport` does no suffix probing, so set `EntryPoint = "CreateProcessW"` explicitly (a
   plain conversion would throw `EntryPointNotFoundException` on Windows). `string?` parameters
@@ -91,23 +106,22 @@ asks for it, and say so.
   must be unchanged.
 - `[Out] byte[]` / `[In] byte[]` buffers (`ReadFile`, `WriteFile`): show in the generated stub
   that they are pinned and passed in place, not copied.
-- **`forkpty`** (`LinuxPty` ×2, `MacOSPty`): the child returns from `fork` through this import's
-  stub and the `Forkpty` override that calls it. **Leave these three as `DllImport`**, and the
-  overrides as they are: a `LibraryImport` wrapper adds a managed frame the child would return
-  through, which is exactly the kind of change R0's rule forbids, for no gain.
+- **`forkpty`** (`LinuxPty` ×2, `MacOSPty`): frozen (rules). The child returns from `fork` through
+  this import's stub and the `Forkpty` override; that return path is proven by R0's CI matrix and
+  its gdb evidence. A `LibraryImport` wrapper would replace it with a new stub whose helpers must
+  all be compiled before the fork, for no gain.
 - `read`, `write`, `close`, `waitpid`, `poll` (`UnixPty`): parent-side only; convert them. Show in
   the generated stub that `read`'s `[Out] byte[]` and `write`'s `[In] byte[]` are pinned in place.
 - `LinuxPty`'s `libc`/`libutil` probe and fallback stay exactly as they are.
 
-### Item 3: `nint` for native handles and sizes (80 `IntPtr`)
+### Item 3: `nint` for native handles and sizes (66 convertible `IntPtr`)
 
 `IntPtr` → `nint`, `IntPtr.Zero` → `0`, `new IntPtr(x)` → `(nint)x`, `IntPtr.Size` → `nint.Size`,
 where it is a pointer, handle or size in a P/Invoke signature, struct field or local. Identical
 type (`nint` is `IntPtr`), so this is purely spelling; do it after item 2 so the signatures are
 touched once more at most. **Trap:** `var h = IntPtr.Zero;` must become `nint h = 0;`, not
 `var h = 0;` (that infers `int`, and an `out nint` argument then fails to compile).
-`Marshal.WriteIntPtr` is a method name and stays. The frozen fork-child region (rules) keeps its
-spelling.
+`Marshal.WriteIntPtr` is a method name and stays. The frozen spans (rules) keep their spelling.
 
 ### Item 4: smaller idioms
 
