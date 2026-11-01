@@ -70,11 +70,24 @@ any position, is seen in full. Additional care:
 
 ### Fork safety (`UnixPty`)
 
-Between `forkpty()` and `execvp()` the child may only make async-signal-safe calls —
-no managed allocation, no P/Invoke marshaling (both can re-enter the CLR and deadlock
-on GC locks held by other threads at fork time). All argv strings are marshaled to
-native memory *before* the fork; on exec failure the child writes a diagnostic through
-a pre-pinned buffer using the raw-pointer `write(2)` overload, then calls `_exit`.
+The forked child must run no code generated after `fork()`. With W^X on (the .NET
+default), Linux maps JIT code as shared memory, so a child that compiles a stub, binds a
+P/Invoke lazily or runs a type initializer races the still-running parent and can crash
+(1.0.0 did, with exit 139, on JIT hosts; NativeAOT hosts were unaffected). So:
+
+- `execvp`, `write` and `_exit` are resolved with `NativeLibrary` in the parent and called
+  from the child through unmanaged function pointers held in locals; the type initializer
+  is forced before the fork; argv and the exec-failure message are in native or pinned
+  memory computed before the fork. The child branch is three direct calls into libc.
+- The library is always compiled optimised and `Run` is `AggressiveOptimization`:
+  unoptimised (debug) JIT code routes even function-pointer calls through a stub built on
+  first call, which would be in the child.
+
+**Known limitations:** a debugger that suppresses JIT optimisation for the library, or a
+profiler that forces debug code, brings that stub back, so the child can crash under them
+on Linux. musl (Alpine) is untested. If a garbage collection is suspending threads at the
+exact moment of the fork, the child can hang in the runtime's return path and the parent
+waits for it indefinitely (rare; present since 1.0.0; tracked in the issues).
 
 ### Drain timeout and truncation
 
@@ -88,10 +101,12 @@ risking a leak.
 
 ## Testing
 
-`RedactingPty.Tests` covers the chunk-boundary sliding-window logic and the
-fallback drain plumbing with in-memory streams — no PTY or subprocess needed.
-End-to-end PTY behaviour (a real forkpty/ConPTY with output interception) needs to
-be exercised by a consuming application's own integration tests.
+`RedactingPty.Tests` covers the chunk-boundary sliding-window logic, the fallback drain
+plumbing, and the real PTY runners end to end: `RedactingPty.TestHost` runs a child through
+`LinuxPty`, `MacOSPty` or `WindowsPty` directly, and the tests check redaction (including
+secrets that straddle read boundaries), exit codes, signals, TTY detection and the
+exec-failure diagnostic. CI runs them on Linux, macOS and Windows against a Debug JIT host,
+a Release JIT host and a NativeAOT host (`REDACTINGPTY_TESTHOST` names the host binary).
 
 ## Origin
 
