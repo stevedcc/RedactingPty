@@ -16,6 +16,8 @@ jobs:
     #   jit-debug   - the host as `dotnet build` makes it (Debug, JIT)
     #   jit-release - the host built Release (JIT, optimised: inlining differs from Debug)
     #   aot         - the host published NativeAOT (how tswap ships the library)
+    # Every mode runs the tests for both target frameworks (net10.0 and net11.0), each against
+    # the test host built for the same framework, so the child-side code runs on that runtime.
     # W^X stays at the runtime's default (on) in every leg.
     # ubuntu-latest / jit-debug is the canary for code generated in the forked child (the 1.0.0
     # crash): it fails reliably when that regresses. macOS (MAP_JIT, private code pages)
@@ -40,9 +42,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The SDK global.json names (.NET 11) builds and runs both test targets; the net10.0
+      # tests and the net10.0 test host need the .NET 10 runtime, which that SDK does not carry.
       - uses: actions/setup-dotnet@v4
         with:
           global-json-file: global.json
+          dotnet-version: 10.0.x
+
+      - name: Show SDKs and runtimes
+        run: |
+          dotnet --list-sdks
+          dotnet --list-runtimes
 
       - name: Build (Debug)
         if: matrix.mode != 'jit-release'
@@ -60,16 +70,26 @@ jobs:
         if: matrix.mode == 'jit-release'
         run: dotnet test RedactingPty.slnx -c Release --no-build
 
-      - name: Publish the test host (NativeAOT)
+      - name: Publish the test host (NativeAOT, net10.0)
         if: matrix.mode == 'aot'
-        run: dotnet publish RedactingPty.TestHost -c Release -r ${{ matrix.rid }} -p:PublishAot=true
+        run: dotnet publish RedactingPty.TestHost -f net10.0 -c Release -r ${{ matrix.rid }} -p:PublishAot=true
 
-      - name: Test (NativeAOT host)
+      - name: Publish the test host (NativeAOT, net11.0)
+        if: matrix.mode == 'aot'
+        run: dotnet publish RedactingPty.TestHost -f net11.0 -c Release -r ${{ matrix.rid }} -p:PublishAot=true
+
+      - name: Test (NativeAOT host, net10.0)
         if: matrix.mode == 'aot'
         env:
           # Absolute: the test process does not run in the repository root.
           REDACTINGPTY_TESTHOST: ${{ github.workspace }}/RedactingPty.TestHost/bin/Release/net10.0/${{ matrix.rid }}/publish/RedactingPty.TestHost${{ matrix.exe }}
-        run: dotnet test RedactingPty.slnx --no-build
+        run: dotnet test RedactingPty.Tests --no-build -f net10.0
+
+      - name: Test (NativeAOT host, net11.0)
+        if: matrix.mode == 'aot'
+        env:
+          REDACTINGPTY_TESTHOST: ${{ github.workspace }}/RedactingPty.TestHost/bin/Release/net11.0/${{ matrix.rid }}/publish/RedactingPty.TestHost${{ matrix.exe }}
+        run: dotnet test RedactingPty.Tests --no-build -f net11.0
 
       - name: Pack (sanity check — not published here)
         if: matrix.mode == 'jit-debug'
