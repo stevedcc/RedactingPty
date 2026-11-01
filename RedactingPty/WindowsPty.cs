@@ -13,7 +13,7 @@ namespace RedactingPty;
 /// the behaviour of the POSIX forkpty() implementations on Linux and macOS.
 /// </summary>
 [SupportedOSPlatform("windows")]
-internal sealed class WindowsPty : IPtyRunner
+internal sealed partial class WindowsPty : IPtyRunner
 {
     [StructLayout(LayoutKind.Sequential)]
     private struct COORD
@@ -55,7 +55,7 @@ internal sealed class WindowsPty : IPtyRunner
     {
         public int    nLength;
         public IntPtr lpSecurityDescriptor;
-        public bool   bInheritHandle;
+        public int    bInheritHandle; // BOOL; int keeps the struct blittable (never set: FALSE)
     }
 
     private const uint EXTENDED_STARTUPINFO_PRESENT        = 0x00080000;
@@ -64,61 +64,71 @@ internal sealed class WindowsPty : IPtyRunner
     private const uint INFINITE                            = 0xFFFFFFFF;
     private const uint WAIT_FAILED                         = 0xFFFFFFFF;
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool CreatePipe(
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool CreatePipe(
         out IntPtr hReadPipe, out IntPtr hWritePipe,
         ref SECURITY_ATTRIBUTES lpPipeAttributes, uint nSize);
 
     // Returns HRESULT: S_OK (0) on success, negative on failure.
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern int CreatePseudoConsole(
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    private static partial int CreatePseudoConsole(
         COORD size, IntPtr hInput, IntPtr hOutput, uint dwFlags, out IntPtr hPC);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern void ClosePseudoConsole(IntPtr hPC);
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    private static partial void ClosePseudoConsole(IntPtr hPC);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool InitializeProcThreadAttributeList(
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool InitializeProcThreadAttributeList(
         IntPtr lpAttributeList, int dwAttributeCount, int dwFlags, ref IntPtr lpSize);
 
     // For PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, lpValue carries the HPCON handle VALUE
     // itself (the consumer does not dereference it) — matching Microsoft's ConPTY sample.
     // Passing a pointer-to-handle makes the child treat the pointer as its HPCON and die
     // during init with STATUS_DLL_INIT_FAILED (0xC0000142); caught by the ConPTY E2E test.
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool UpdateProcThreadAttribute(
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool UpdateProcThreadAttribute(
         IntPtr lpAttributeList, uint dwFlags, IntPtr Attribute,
         IntPtr lpValue, IntPtr cbSize,
         IntPtr lpPreviousValue, IntPtr lpReturnSize);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern void DeleteProcThreadAttributeList(IntPtr lpAttributeList);
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    private static partial void DeleteProcThreadAttributeList(IntPtr lpAttributeList);
 
     // lpCommandLine must be a mutable buffer — Windows may write to it in some edge cases.
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern bool CreateProcess(
+    // The generator pins the char[] and passes it in place. LibraryImport does no A/W suffix
+    // probing, so the Unicode entry point is named explicitly.
+    [LibraryImport("kernel32.dll", EntryPoint = "CreateProcessW", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool CreateProcess(
         string? lpApplicationName, [In] char[] lpCommandLine,
         IntPtr lpProcessAttributes, IntPtr lpThreadAttributes,
-        bool bInheritHandles, uint dwCreationFlags,
+        [MarshalAs(UnmanagedType.Bool)] bool bInheritHandles, uint dwCreationFlags,
         IntPtr lpEnvironment, string? lpCurrentDirectory,
         ref STARTUPINFOEX lpStartupInfo, out PROCESS_INFORMATION lpProcessInformation);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern uint WaitForSingleObject(IntPtr hHandle, uint dwMilliseconds);
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    private static partial uint WaitForSingleObject(IntPtr hHandle, uint dwMilliseconds);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool GetExitCodeProcess(IntPtr hProcess, out uint lpExitCode);
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool GetExitCodeProcess(IntPtr hProcess, out uint lpExitCode);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool CloseHandle(IntPtr hObject);
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool CloseHandle(IntPtr hObject);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool ReadFile(
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool ReadFile(
         IntPtr hFile, [Out] byte[] lpBuffer, uint nNumberOfBytesToRead,
         out uint lpNumberOfBytesRead, IntPtr lpOverlapped);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool WriteFile(
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool WriteFile(
         IntPtr hFile, [In] byte[] lpBuffer, uint nNumberOfBytesToWrite,
         out uint lpNumberOfBytesWritten, IntPtr lpOverlapped);
 

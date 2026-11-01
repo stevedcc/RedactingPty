@@ -34,7 +34,7 @@ namespace RedactingPty;
 /// </summary>
 [SupportedOSPlatform("linux")]
 [SupportedOSPlatform("macos")]
-internal abstract class UnixPty : IPtyRunner
+internal abstract partial class UnixPty : IPtyRunner
 {
     // Message written to stderr when execvp fails in the child after fork().
     // The byte[] is pinned for the process lifetime so the GC never moves it; Run takes its
@@ -58,23 +58,23 @@ internal abstract class UnixPty : IPtyRunner
         public ushort ws_row, ws_col, ws_xpixel, ws_ypixel;
     }
 
-    [DllImport("libc", EntryPoint = "read", SetLastError = true)]
-    private static extern nint read(int fd, [Out] byte[] buf, nint count);
+    [LibraryImport("libc", EntryPoint = "read", SetLastError = true)]
+    private static partial nint read(int fd, [Out] byte[] buf, nint count);
 
-    [DllImport("libc", EntryPoint = "write", SetLastError = true)]
-    private static extern nint write(int fd, [In] byte[] buf, nint count);
+    [LibraryImport("libc", EntryPoint = "write", SetLastError = true)]
+    private static partial nint write(int fd, [In] byte[] buf, nint count);
 
-    [DllImport("libc", EntryPoint = "close")]
-    private static extern int close(int fd);
+    [LibraryImport("libc", EntryPoint = "close")]
+    private static partial int close(int fd);
 
-    [DllImport("libc", EntryPoint = "waitpid", SetLastError = true)]
-    private static extern int waitpid(int pid, ref int status, int options);
+    [LibraryImport("libc", EntryPoint = "waitpid", SetLastError = true)]
+    private static partial int waitpid(int pid, ref int status, int options);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct PollFd { public int fd; public short events; public short revents; }
 
-    [DllImport("libc", EntryPoint = "poll", SetLastError = true)]
-    private static extern int poll(ref PollFd fds, uint nfds, int timeout);
+    [LibraryImport("libc", EntryPoint = "poll", SetLastError = true)]
+    private static partial int poll(ref PollFd fds, uint nfds, int timeout);
 
     private const short POLLIN   = 1;   // POSIX: fd has data to read (Linux and macOS)
     private const short POLLOUT  = 4;   // POSIX: fd is ready for writing
