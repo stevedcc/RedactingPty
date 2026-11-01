@@ -68,7 +68,8 @@ Counts on `main` (`e845846`), production code (`RedactingPty/`):
   allowed). From then on `dotnet pack` (CI's pack step runs it) fails on any public API change.
   If the validator rejects the csproj's `<Version>0.0.0-local</Version>` as lower than the
   baseline, set it to `1.0.1-local` (the publish workflow still overrides it from the tag).
-- Tests change only where item 1 adds them. Never change an existing test's assertion.
+- Tests change only where item 1 adds them or a signature change forces it (item 4). Never change
+  an existing test's assertion.
 - `writing-dotnet10-code`'s Discipline line "tests go through public behaviour: no
   `InternalsVisibleTo`" is **overridden here on purpose**: the library already grants
   `InternalsVisibleTo` to `RedactingPty.Tests`, and the real-PTY runners can't be reached through
@@ -108,9 +109,12 @@ item is the library csproj (package validation, and `InternalsVisibleTo` for the
 **Tests:**
 - all three OSes:
   - a secret printed by the child comes out replaced, the surrounding text unchanged;
-  - **read-boundary coverage:** the child prints the secret on each of 300 short lines (well over
-    4096 bytes in total, so some occurrences straddle the runners' 4096-byte reads): no occurrence
-    leaks and the count of replacement markers is 300;
+  - **read-boundary coverage:** the child prints 300 lines, each made mostly of back-to-back
+    secrets (e.g. `hunter2hunter2hunter2hunter2 .`, four per line, under 80 columns), so nearly every
+    byte offset lies inside an occurrence and the runners' 4096-byte read boundaries land inside
+    secrets: no occurrence leaks (raw bytes) and the count of replacement markers is exactly 1200.
+    If ConPTY repainting makes the exact count unstable on `windows-latest`, say so and assert
+    "no leak and at least 1200" there, with the evidence;
   - a secret as the **last bytes with no trailing newline** comes out replaced (the redactor's
     `Flush` tail);
   - the child's exit code passes through (`sh -c 'exit 7'` → 7; Windows `cmd /c exit 7` → 7).

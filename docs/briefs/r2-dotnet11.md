@@ -29,17 +29,18 @@ net11.0 without trouble, so nothing forces this; it keeps the library current.
    and its `references/` (`core-libraries-`, `runtime-jit-`, `sdk-msbuild-`,
    `csharp-compiler-dotnet10to11.md`; interop and process-related entries matter most here) as a
    checklist, plus Microsoft's ".NET 11 breaking changes" page for Preview 4 through RC 3 (read only;
-   if you can't reach it, say so). One report line per relevant entry: affects RedactingPty or not,
+   if you can't reach it, say so). The skill's references stay authoritative for what they cover;
+   the page only adds the later previews and RCs. One report line per relevant entry: affects RedactingPty or not,
    and why.
 4. **Idioms:** none. The library compiles as `net10.0` (C# 14); C# 15 forms are not available
    to it. Test code you write follows `writing-dotnet10-code` (it compiles for both targets).
 5. **CI:** `ci.yml` and `publish.yml` both read the SDK from `global.json` (`global-json-file`); the .NET 11 SDK builds and
-   runs both test targets (it carries the .NET 10 runtime only if installed: make sure CI's
-   `setup-dotnet` installs the `10.0.x` runtime alongside the SDK `global.json` names, and that the
-   test log shows both `net10.0` and `net11.0` runs). The packed `.nupkg` still has only
+   runs both test targets, but the `net10.0` tests need the .NET 10 runtime, which the .NET 11 SDK
+   does not include: make CI's `setup-dotnet` install `10.0.x` alongside the SDK `global.json`
+   names, and check that the test log shows both `net10.0` and `net11.0` runs). The packed `.nupkg` still has only
    `lib/net10.0`, and R1's package validation against 1.0.0 still passes.
 6. **NativeAOT:** R1's AOT check (a tiny NativeAOT app referencing the library) also publishes
-   for `net11.0` with 0 AOT/trim warnings, and R1's PTY tests pass on .NET 11 on all three OSes.
+   for `net11.0` (`-f net11.0`, the host being multi-targeted) with 0 AOT/trim warnings, and R1's PTY tests pass on .NET 11 on all three OSes.
 
 ## Items
 
