@@ -1,35 +1,30 @@
-# Brief R1: RedactingPty in idiomatic .NET 10 / C# 14, behind real PTY tests (behaviour unchanged)
+# Brief R1: RedactingPty in idiomatic .NET 10 / C# 14 (behaviour unchanged)
 
 RedactingPty (github stevedcc/RedactingPty, NuGet `RedactingPty`, MIT) runs a child process in a
-pseudo-terminal and redacts secrets from its output as it streams. tswap's `run` uses it
-(`TswapCli.csproj`: `RedactingPty` 1.0.0). It targets `net10.0`, is `IsAotCompatible`, and has no
-dependencies.
+pseudo-terminal and redacts secrets from its output as it streams. tswap's `run` uses it. It targets
+`net10.0`, is `IsAotCompatible`, and has no dependencies. **Revised 2026-11-01 after brief R0**
+(the fork-child fix, released as 1.0.2): R0 delivered this brief's former item 1 (the real-PTY
+tests and the CI matrix) and changed the child path, so the rules below reflect the code on `main`
+at `5d9a8fa`, which this branch now contains.
 
 Rules: one commit per item, `dotnet build RedactingPty.slnx` warning-free and
 `dotnet test RedactingPty.slnx` green after each commit. No new NuGet packages in the library.
-Never download or install an SDK or a toolchain (the SDK `global.json` names, 10.0.302 with
-`rollForward: latestFeature`, is installed at `~/dotnet`; `export DOTNET_ROOT=$HOME/dotnet
-PATH=$HOME/dotnet:$PATH` if `dotnet --version` is not 10.0.x or 11.0.x). Nothing in this brief
-needs `sudo`.
+Never download or install an SDK or a toolchain (`export DOTNET_ROOT=$HOME/dotnet
+PATH=$HOME/dotnet:$PATH`; `global.json` rolls forward to the installed 10.0.4xx SDK). NuGet
+restores are fine. Nothing in this brief needs `sudo`. Always build from clean when switching
+between a JIT and a NativeAOT test host (a stale AOT host in `bin/` once gave a false pass).
 
 ## Why
 
-**Order:** first of two briefs. R2 retargets to .NET 11 and is held until .NET 11 GA.
-Owner (2026-11-01): "Let's do an upgrade branch for redactingpty too. First of all idiomatic net
-10, then net 11." It mirrors tswap's T14/T15 pair.
+**Order:** after R0, before R2 (.NET 11 test targets, held until GA). Owner (2026-11-01): "First of
+all idiomatic net 10, then net 11." It mirrors tswap's T14/T15 pair.
 
-The library is small (about 1000 production lines in 9 files) but delicate: `UnixPty` forks, and
-the child must make only async-signal-safe native calls with no managed allocation until `execvp`
-or `_exit`; `WindowsPty` drives ConPTY. **Neither real-PTY runner has a test today.** The only
-tests are `StreamRedactorTests` (20) and `FallbackPtyTests` (7, in-memory `Drain`). A refactor of
-the P/Invoke layer with no test that runs a child in a PTY would be blind, so item 1 comes first.
-
-Counts on `main` (`e845846`), production code (`RedactingPty/`):
+Counts on `main` (`5d9a8fa`), production code (`RedactingPty/`):
 
 | Older form | Count |
 |---|---|
-| `[DllImport]` (UnixPty 8, LinuxPty 2, MacOSPty 1, WindowsPty 12) | 23 (no `[LibraryImport]`) |
-| `IntPtr` as a type token in code (comments and `Marshal.WriteIntPtr` not counted; `nint` appears 9 times) | 83 |
+| `[DllImport]` (UnixPty 5: `read`, `write`, `close`, `waitpid`, `poll`; LinuxPty 2 and MacOSPty 1: `forkpty`; WindowsPty 12) | 20 (no `[LibraryImport]`) |
+| `IntPtr` as a type token in code (comments and `Marshal.WriteIntPtr` not counted) | 80 |
 | `new object()` as a lock (`FallbackPty.cs`) | 1 |
 | `throw new Exception(...)` | 10 |
 | catch-all `catch { ... }` (no exception type) | 5 |
@@ -43,106 +38,36 @@ Counts on `main` (`e845846`), production code (`RedactingPty/`):
   `/home/stevecrawford/RiderProjects/croft/.claude/skills/writing-dotnet10-code/SKILL.md` (its
   defaults table and "Always" line; its Croft-only rows, EF Core and Blazor, don't apply).
 - **Public API unchanged:** `IPtyRunner`, `PtyRunnerFactory.Create()`, `StreamRedactor`
-  (constructor, `ProcessChunk`, `Flush`), `StreamReplacement`. Package validation (below) enforces
-  it against the published 1.0.0.
+  (constructor, `ProcessChunk`, `Flush`), `StreamReplacement`. Package validation against the
+  published 1.0.0 is already on (R0); CI's pack step fails on any public API change.
 - **Exception types and messages unchanged** (callers may catch them): the ten
   `throw new Exception(...)` stay `Exception` with the same text. Item 5 reviews them, report only.
-- **Fork safety is the hard constraint.** The child block (`UnixPty.Run`'s `if (pid == 0)`
-  branch, between `forkpty` returning 0 and `execvp`/`_exit`) **keeps exactly the calls it makes
-  today, no more**: `execvp_native`, `ExecFailedMsgPin.AddrOfPinnedObject()`, `ExecFailedMsg.Length`,
-  `write_ptr`, `_exit`. (`AddrOfPinnedObject()` is a managed call after fork; that is pre-existing
-  and low-risk. Don't "fix" it here; item 5 may propose hoisting it into a pre-fork local.) The
-  P/Invokes it calls must not gain marshalling, allocation or last-error handling. Note that the
-  parent never calls `execvp_native`, so its stub is first compiled in the child, today and after
-  the change; that is why item 2 requires the generated stub as evidence. If you aren't certain a
-  changed form is equivalent, leave it as it is and say why.
+- **The fork-child path is frozen (R0's mechanism).** Everything in `UnixPty.Run` from the
+  explicit `RuntimeHelpers.RunClassConstructor` call before `Forkpty`, the three
+  `delegate* unmanaged[SuppressGCTransition]` locals (`execvp`, `write`, `_exit`) and the message
+  address/length locals, through the `if (pid == 0)` branch, stays exactly as it is, and so do the
+  static fields holding the resolved addresses, the `[MethodImpl(AggressiveOptimization)]` on
+  `Run`, and `<Optimize>true</Optimize>` in the library csproj (README "Fork safety" explains why:
+  unoptimised code routes even function-pointer calls through a stub built on first call, in the
+  child). Don't move, rename or re-spell anything there, not even `IntPtr` → `nint` (item 3) or a
+  `using`, since any extra managed call in the child reintroduces the 1.0.0 crash.
+- **The tests from R0 are the safety net:** `PtyRunnerTests` (real child through each runner) and
+  the CI matrix (Debug JIT, Release JIT, NativeAOT × ubuntu, macOS, Windows). ubuntu / jit-debug is
+  the canary for code generated in the child. All nine legs stay green after every item; the
+  controller pushes and reads them.
 - Keep AOT clean: `dotnet publish RedactingPty.TestHost -c Release -r linux-x64 -p:PublishAot=true`
-  (item 1's test host) reports 0 AOT/trim warnings, first right after item 1 ("before") and again
-  at the end ("after"). Restoring the `Microsoft.DotNet.ILCompiler` NuGet package for that is a
-  package restore and is allowed (it is already in `~/.nuget/packages`; clang is installed); it is
-  not a toolchain install.
-- **Public API guard:** item 1 turns on the SDK's package validation against the published
-  package: `<EnablePackageValidation>true</EnablePackageValidation>` and
-  `<PackageValidationBaselineVersion>1.0.0</PackageValidationBaselineVersion>` in the library
-  csproj (built into the SDK, no new package; restoring the 1.0.0 baseline from nuget.org is
-  allowed). From then on `dotnet pack` (CI's pack step runs it) fails on any public API change.
-  If the validator rejects the csproj's `<Version>0.0.0-local</Version>` as lower than the
-  baseline, set it to `1.0.1-local` (the publish workflow still overrides it from the tag).
-- Tests change only where item 1 adds them or a signature change forces it (item 4). Never change
-  an existing test's assertion.
-- `writing-dotnet10-code`'s Discipline line "tests go through public behaviour: no
-  `InternalsVisibleTo`" is **overridden here on purpose**: the library already grants
-  `InternalsVisibleTo` to `RedactingPty.Tests`, and the real-PTY runners can't be reached through
-  `PtyRunnerFactory` when stdout is redirected, so item 1's test host needs it too.
+  reports 0 AOT/trim warnings before your first commit and at the end.
+- Tests change only where a signature change forces it (item 4). Never change an existing test's
+  assertion.
 
 ## Items
 
-### Item 1: characterization tests for the real PTY runners (first, on unchanged code)
+### Item 1: done in R0
 
-Add tests that run a real child process through `LinuxPty`, `MacOSPty` and `WindowsPty` and assert
-what a user sees: the redacted output and the child's exit code. They must pass on the unchanged
-code, in CI on all three OSes, before any refactor commit. The only production-file change in this
-item is the library csproj (package validation, and `InternalsVisibleTo` for the test host).
+The real-PTY characterization tests, the test host, the CI matrix and package validation are on
+`main`. Nothing to do; this numbering is kept so the report lines up with the earlier review.
 
-**Design** (adapt if something doesn't work; say what you changed and why):
-- A non-packable console project `RedactingPty.TestHost`, added to `RedactingPty.slnx`, referenced
-  only by the tests. It takes a runner name (`linux`, `macos`, `windows`), replacements and argv,
-  constructs that runner **directly** (bypassing `PtyRunnerFactory`'s redirection check), runs it
-  and exits with its exit code. If `Run` throws, it prints the exception to stderr and exits with
-  **120** (a code no test child uses), so a test fails with a diagnosis. It sets
-  `Console.OutputEncoding = UTF8`.
-- The tests launch the host with **stdin, stdout and stderr redirected**: stdin closed at once
-  (empty), so the runner's stdin-forwarding thread sends nothing the PTY could echo; stdout and
-  stderr read concurrently to EOF before waiting for exit (no pipe-buffer deadlock). Every launch
-  has a timeout (30 s): on timeout, `Kill(entireProcessTree: true)` and fail with the output
-  captured so far. Nothing may hang a CI job.
-- **Assertions on what a user sees, robust to terminal framing.** A PTY's line discipline turns
-  `\n` into `\r\n` (Unix), and ConPTY emits VT escape sequences and wraps at the 80-column size the
-  runners fall back to. So: (1) the primary assertion is that the secret is **absent from the raw
-  output bytes**; (2) then strip ANSI CSI/OSC sequences, normalise `\r\n` to `\n`, and assert the
-  expected redacted text with `Contains`. Test strings are ASCII; on Windows every line is well
-  under 80 columns.
-- OS gating: xunit v2 has no runtime skip, so use a `Fact` subclass that sets `Skip` from
-  `OperatingSystem.Is*()`. The controller checks each CI leg's log for the number of tests that ran
-  (not skipped) on that OS.
-
-**Tests:**
-- all three OSes:
-  - a secret printed by the child comes out replaced, the surrounding text unchanged;
-  - **read-boundary coverage:** the child prints 300 lines, each made mostly of back-to-back
-    secrets (e.g. `hunter2hunter2hunter2hunter2 .`, four per line, under 80 columns), so nearly every
-    byte offset lies inside an occurrence and the runners' 4096-byte read boundaries land inside
-    secrets: no occurrence leaks (raw bytes) and the count of replacement markers is exactly 1200.
-    If ConPTY repainting makes the exact count unstable on `windows-latest`, say so and assert
-    "no leak and at least 1200" there, with the evidence;
-  - a secret as the **last bytes with no trailing newline** comes out replaced (the redactor's
-    `Flush` tail);
-  - the child's exit code passes through (`sh -c 'exit 7'` → 7; Windows `cmd /c exit 7` → 7).
-- Unix only:
-  - a child killed by a signal returns 128 + signal (`sh -c 'kill -TERM $$'` → 143);
-  - the child really has a TTY (`sh -c 'test -t 1 && echo is-a-tty'` prints `is-a-tty`), which is
-    the point of a PTY runner over `FallbackPty`;
-  - stderr is merged and redacted too (`sh -c 'echo SECRET 1>&2'`);
-  - a command that doesn't exist exits 127 and prints
-    `redactingpty: exec failed (command not found or not executable)` (the child-path diagnostic);
-  - best effort, documented as such: a secret split across two child writes
-    (`sh -c 'printf "%s" "<4000 filler chars>hun"; sleep 0.3; printf "ter2 tail"'`) comes out
-    replaced. If the writes coalesce into one read the test still passes, so it is not the
-    required overlap check; the 300-line test is.
-- If a CI runner can't host one of these, stop and report with the evidence; don't skip silently.
-
-**Break-it-once**, one push that breaks all three runners at once (the controller reads the red
-check runs, then you revert): (1) each runner writes `ProcessChunk`'s input instead of its output:
-the redaction tests fail on every OS; (2) each runner returns 0 instead of the exit code: the exit
-code tests fail; (3) Unix: the signal branch returns `status & 0x7f` without the 128: the signal
-test fails; (4) Unix: the child writes nothing before `_exit(127)`: the diagnostic test fails.
-Name them in the commit message.
-
-The controller pushes the branch and opens the PR; your report marks the macOS and Windows runs as
-"pending the PR run", and the controller fills them in from the check log. You never state a CI
-result you haven't seen.
-
-### Item 2: `LibraryImport` instead of `DllImport` (23 sites)
+### Item 2: `LibraryImport` instead of `DllImport` (20 sites)
 
 `[LibraryImport]` with `static partial` methods; the containing types (`UnixPty`, `LinuxPty`,
 `MacOSPty`, `WindowsPty`) become `partial`. Keep each library name, entry point and `SetLastError`
@@ -164,22 +89,25 @@ asks for it, and say so.
   `STARTUPINFOEX`, `PROCESS_INFORMATION`, `SECURITY_ATTRIBUTES`, `Winsize`, `PollFd`), report
   `Marshal.SizeOf<T>()` before and after on x64 (e.g. from a throwaway test or the test host); all
   must be unchanged.
-- `[Out] byte[]` / `[In] byte[]` buffers (`read`, `write`, `ReadFile`, `WriteFile`): show in the
-  generated stub that they are pinned and passed in place, not copied.
-- **The child-path imports** (`execvp_native`, `write_ptr`, `_exit`): convert them only if the
-  generated stub is a direct call with no marshalling, no allocation and no last-error handling
-  (none sets `SetLastError` today). Quote each generated stub in the report. If any does more,
-  keep that one as `DllImport` and say why.
+- `[Out] byte[]` / `[In] byte[]` buffers (`ReadFile`, `WriteFile`): show in the generated stub
+  that they are pinned and passed in place, not copied.
+- **`forkpty`** (`LinuxPty` ×2, `MacOSPty`): the child returns from `fork` through this import's
+  stub and the `Forkpty` override that calls it. **Leave these three as `DllImport`**, and the
+  overrides as they are: a `LibraryImport` wrapper adds a managed frame the child would return
+  through, which is exactly the kind of change R0's rule forbids, for no gain.
+- `read`, `write`, `close`, `waitpid`, `poll` (`UnixPty`): parent-side only; convert them. Show in
+  the generated stub that `read`'s `[Out] byte[]` and `write`'s `[In] byte[]` are pinned in place.
 - `LinuxPty`'s `libc`/`libutil` probe and fallback stay exactly as they are.
 
-### Item 3: `nint` for native handles and sizes (83 `IntPtr`)
+### Item 3: `nint` for native handles and sizes (80 `IntPtr`)
 
 `IntPtr` → `nint`, `IntPtr.Zero` → `0`, `new IntPtr(x)` → `(nint)x`, `IntPtr.Size` → `nint.Size`,
 where it is a pointer, handle or size in a P/Invoke signature, struct field or local. Identical
 type (`nint` is `IntPtr`), so this is purely spelling; do it after item 2 so the signatures are
 touched once more at most. **Trap:** `var h = IntPtr.Zero;` must become `nint h = 0;`, not
 `var h = 0;` (that infers `int`, and an `out nint` argument then fails to compile).
-`Marshal.WriteIntPtr` is a method name and stays.
+`Marshal.WriteIntPtr` is a method name and stays. The frozen fork-child region (rules) keeps its
+spelling.
 
 ### Item 4: smaller idioms
 
@@ -204,9 +132,12 @@ One line each in the report, with a proposal where you have one:
 - the five catch-all `catch` blocks (console size probes ×2, the stdin forwarding threads ×2, and
   `UnixPty`'s `readTask.Wait()` after a `waitpid` failure): why it catches everything, or what it
   should catch;
-- `UnixPty`'s class comment: "full path bypasses PATH lookup" is wrong (`execvp` searches `PATH`),
-  and "no CLR re-entry" is not quite true (`AddrOfPinnedObject()` runs in the child); propose the
-  corrected wording and whether to hoist `AddrOfPinnedObject()` into a pre-fork local;
+- **Redaction throughput (measure, don't change):** `StreamRedactor` scans each window once per
+  replacement (`IndexOf` loop, then `string.Replace` per replacement). Measure throughput with 1,
+  10 and 50 replacements over ~100 MB of mixed text (a throwaway benchmark, not committed), and
+  say whether a single-pass multi-string search (`SearchValues<string>`) would be worth a later
+  brief. (In tswap, `redact`'s per-line regex approach measured 2.1 s for 200 secrets × 221 KB
+  against 9 ms single-pass, tswap #220; `run` typically passes 1–3 replacements.)
 - the ten `throw new Exception(...)`: whether a specific type (e.g. `Win32Exception`,
   `IOException`) would be better, and what it would break for callers;
 - `WindowsPty`'s `Thread.Sleep(200)` drain loop and `UnixPty`'s 200 ms poll timeout: whether
@@ -220,14 +151,17 @@ One line each in the report, with a proposal where you have one:
 - Anything .NET 11 / C# 15 offers (that's R2).
 - Changing behaviour: timeouts, buffer sizes, exception types, the fallback rules, the drain
   truncation marker.
-- Publishing: no tag, no NuGet release. The owner decides the version (proposal: 1.0.1, no API
+- Publishing: no tag, no NuGet release. The owner decides the version (proposal: 1.0.3, no API
   change) after merge.
+- The fork-child path (rules), and the R0 follow-ups (RedactingPty #6 GC-suspension hang, #7
+  `execvp` → `execve`).
 - tswap itself.
 
 ## Report
 
 `~/RiderProjects/redactingpty-wt/r1-report.md`: per item what changed (files, counts, sites left
-alone and why), the generated-stub evidence and struct sizes from item 2, the package-validation
-result (pack passes against the 1.0.0 baseline), the AOT publish result before and after, the item
-5 review, and the final `dotnet test` summary line.
+alone and why), the generated-stub evidence and struct sizes from item 2, a statement that the
+fork-child region is byte-identical to `main` (e.g. the diff of that region is empty), the
+package-validation result, the AOT publish result before and after, the item 5 review with the
+throughput numbers, and the final `dotnet test` summary line.
 State is kept in `~/RiderProjects/redactingpty-wt/r1-state.md` so the work can resume from disk.
