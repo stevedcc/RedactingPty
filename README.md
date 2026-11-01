@@ -107,7 +107,13 @@ plumbing, and the real PTY runners end to end: `RedactingPty.TestHost` runs a ch
 `LinuxPty`, `MacOSPty` or `WindowsPty` directly, and the tests check redaction (including
 secrets that straddle read boundaries), exit codes, signals, TTY detection and the
 exec-failure diagnostic. CI runs them on Linux, macOS and Windows against a Debug JIT host,
-a Release JIT host and a NativeAOT host (`REDACTINGPTY_TESTHOST` names the host binary).
+a Release JIT host and a NativeAOT host (`REDACTINGPTY_TESTHOST` names the host binary), each
+on both .NET 10 and .NET 11: the library targets `net10.0` only, the tests and the test host
+target `net10.0` and `net11.0`, and each framework's tests launch the host built for the same
+framework. To run them against a NativeAOT host by hand, publish the host per framework and run
+`dotnet test RedactingPty.Tests -f <framework>` once per framework with `REDACTINGPTY_TESTHOST`
+pointing at that framework's binary; one variable for a run of both frameworks would test both
+against the same host.
 
 ## Origin
 
