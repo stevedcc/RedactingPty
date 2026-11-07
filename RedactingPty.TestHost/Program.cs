@@ -3,6 +3,7 @@ using RedactingPty;
 using RedactingPty.TestHost;
 
 // Usage: RedactingPty.TestHost <linux|macos|windows|fallback> [OPTION]... -- ARGV...
+//        RedactingPty.TestHost child <prompt|busy|two-threads>   (a test child, see ChildModes)
 //
 // Runs ARGV through the named runner, constructed directly (PtyRunnerFactory would pick
 // FallbackPty because the tests redirect stdio), and exits with the child's exit code.
@@ -14,10 +15,15 @@ using RedactingPty.TestHost;
 //   -m FIND LABEL      a literal find for the test matcher
 //   --throw-on-call N  the test matcher throws on its Nth FindMatches call
 //   --hold-all         the test matcher holds every character (PendingFrom 0, MaxMatchLength 5000)
-// Any -m, --throw-on-call or --hold-all runs the RedactionOptions overload with the test matcher.
+//   --release          RedactionOptions.ReleaseWhenAwaitingInput
+//   --check-log FILE   append one line per input-wait check ("true" or "false") to FILE
+// Any of -m, --throw-on-call, --hold-all, --release runs the RedactionOptions overload.
 
 const int RunThrew = 120;
 const int UsageError = 121;
+
+if (args is ["child", var mode])
+    return ChildModes.Run(mode);
 
 Console.OutputEncoding = Encoding.UTF8;
 
@@ -28,6 +34,8 @@ var replacements = new List<StreamReplacement>();
 List<(string Find, string Label)> matcherFinds = [];
 int? throwOnCall = null;
 var holdAll = false;
+var release = false;
+string? checkLog = null;
 var useOptions = false;
 int i = 1;
 for (; i < args.Length && args[i] != "--"; i++)
@@ -52,6 +60,14 @@ for (; i < args.Length && args[i] != "--"; i++)
             holdAll = true;
             useOptions = true;
             break;
+        case "--release":
+            release = true;
+            useOptions = true;
+            break;
+        case "--check-log" when i + 1 < args.Length:
+            checkLog = args[i + 1];
+            i++;
+            break;
         default:
             return Usage($"unexpected argument '{args[i]}'");
     }
@@ -75,7 +91,12 @@ try
 {
     if (!useOptions)
         return runner.Run(argv, replacements);
-    var options = new RedactionOptions { Matchers = [new TestMatcher(matcherFinds, throwOnCall, holdAll)] };
+    var options = new RedactionOptions
+    {
+        Matchers = [new TestMatcher(matcherFinds, throwOnCall, holdAll)],
+        ReleaseWhenAwaitingInput = release,
+        InputWaitChecked = checkLog is null ? null : result => File.AppendAllText(checkLog, result ? "true\n" : "false\n"),
+    };
     return runner.Run(argv, replacements, options);
 }
 catch (Exception ex)

@@ -12,4 +12,7 @@ public sealed record RedactionOptions
     /// runners. Off by default. See the README, "Releasing held output at a prompt".
     /// </summary>
     public bool ReleaseWhenAwaitingInput { get; init; }
+
+    /// <summary>Called after each input-wait check with its result (the test host's seam).</summary>
+    internal Action<bool>? InputWaitChecked { get; init; }
 }

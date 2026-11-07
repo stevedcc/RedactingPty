@@ -93,6 +93,13 @@ internal abstract partial class UnixPty : IPtyRunner
     protected abstract int Forkpty(out int amaster, IntPtr name, IntPtr termp, ref Winsize winp);
 
     /// <summary>
+    /// The input-wait probe for this platform's PTY master, or null where there is none. Parent only.
+    /// </summary>
+    private static IInputWaitProbe? CreateInputWaitProbe(int masterFd) =>
+        OperatingSystem.IsMacOS() ? new MacInputWaitProbe(masterFd)
+        : LinuxInputWaitProbe.TryCreate(masterFd, RuntimeInformation.ProcessArchitecture);
+
+    /// <summary>
     /// As <see cref="Run(string[], IReadOnlyList{StreamReplacement})"/>, with the options' matchers.
     /// The options travel inside the replacement list (<see cref="MatcherCarrier"/>), so the fork-safe
     /// <c>Run</c> below is reused as it is.
@@ -205,6 +212,13 @@ internal abstract partial class UnixPty : IPtyRunner
         // is written instead, and the exception is rethrown after the child has exited.
         var relay = new RedactionRelay(redactor);
 
+        // Releasing held output at a prompt: built here, in the parent after the fork, from the master.
+        var options = (replacements as MatcherCarrier)?.Options;
+        var releaser = HoldReleaser.Create(options?.ReleaseWhenAwaitingInput == true, TimeProvider.System,
+            () => CreateInputWaitProbe(masterFd));
+        if (options?.InputWaitChecked is { } onCheck)
+            releaser.Checked += onCheck;
+
         // Schedule the read loop on the thread pool immediately — before the stdin
         // thread and before waitpid — so it races to call read(masterFd) while the
         // child is still in its earliest execution. All read-loop state was allocated
@@ -219,9 +233,19 @@ internal abstract partial class UnixPty : IPtyRunner
             {
                 // Poll with a 200 ms timeout so we re-check cancelDrain regularly even
                 // when the child is idle. This avoids blocking indefinitely in read().
+                // While output is held back, the releaser shortens the timeout to its next check.
                 var pfd = new PollFd { fd = masterFd, events = POLLIN };
-                int pr = poll(ref pfd, 1, 200);
-                if (pr == 0) continue;           // timeout — loop back and check cancelDrain
+                int pr = poll(ref pfd, 1, releaser.PollTimeoutMilliseconds(relay.HasHeld));
+                if (pr == 0)                     // timeout — release at a prompt, then check cancelDrain
+                {
+                    if (releaser.ShouldRelease(relay.HasHeld))
+                    {
+                        var released = encoding.GetBytes(relay.Release());
+                        stdout.Write(released, 0, released.Length);
+                        stdout.Flush();
+                    }
+                    continue;
+                }
                 if (pr < 0)
                 {
                     if (Marshal.GetLastPInvokeError() == EINTR) continue;
@@ -240,6 +264,7 @@ internal abstract partial class UnixPty : IPtyRunner
                     if (errno == EINTR || errno == EAGAIN) continue; // retry
                     break; // EIO or other error (slave side closed after child exit)
                 }
+                releaser.OnOutput();
                 var charCount = decoder.GetChars(readBuf, 0, n, charBuf, 0);
                 var redacted  = relay.ProcessChunk(new string(charBuf, 0, charCount));
                 var outBytes  = encoding.GetBytes(redacted);
