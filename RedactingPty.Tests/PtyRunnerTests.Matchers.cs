@@ -130,6 +130,20 @@ public partial class PtyRunnerTests
         Assert.Throws<ArgumentNullException>(() => runner.Run(["x"], [], null!));
     }
 
+    [Fact]
+    public void Fallback_BothStreamsFail_BothReported()
+    {
+        var stdout = System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(new InvalidOperationException("stdout failed"));
+        var stderr = System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(new InvalidOperationException("stderr failed"));
+
+        var both = Assert.Throws<AggregateException>(() => FallbackPty.ThrowFailures(stdout, stderr));
+        Assert.Equal(["stdout failed", "stderr failed"], both.InnerExceptions.Select(e => e.Message));
+
+        Assert.Equal("stdout failed", Assert.Throws<InvalidOperationException>(() => FallbackPty.ThrowFailures(stdout, null)).Message);
+        Assert.Equal("stderr failed", Assert.Throws<InvalidOperationException>(() => FallbackPty.ThrowFailures(null, stderr)).Message);
+        FallbackPty.ThrowFailures(null, null); // nothing to report
+    }
+
     // ── FallbackPty.Drain, in memory ─────────────────────────────────────────────────
 
     private sealed class ThrowOnSecondCall : IStreamMatcher

@@ -77,8 +77,19 @@ internal sealed class FallbackPty : IPtyRunner
         Task.WaitAll(stdoutTask, stderrTask);
         // A redaction failure on either stream: the streams were drained to EOF, nothing after the
         // failure point was written; now report it.
-        (stdoutTask.Result ?? stderrTask.Result)?.Throw();
+        ThrowFailures(stdoutTask.Result, stderrTask.Result);
         return process.ExitCode;
+    }
+
+    /// <summary>
+    /// Rethrows a stream's redaction failure with its original stack; when both streams failed, both
+    /// (an <see cref="AggregateException"/>, stdout's first), so neither cause is lost.
+    /// </summary>
+    internal static void ThrowFailures(ExceptionDispatchInfo? stdout, ExceptionDispatchInfo? stderr)
+    {
+        if (stdout is not null && stderr is not null)
+            throw new AggregateException("Redaction failed on both stdout and stderr.", stdout.SourceException, stderr.SourceException);
+        (stdout ?? stderr)?.Throw();
     }
 
     // Internal (not private) so RedactingPty.Tests can exercise the redaction

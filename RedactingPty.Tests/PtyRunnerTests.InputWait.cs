@@ -134,6 +134,29 @@ public partial class PtyRunnerTests
         Assert.Equal(0, exitCode);
     }
 
+    /// <summary>
+    /// macOS, raw mode: echo off but canonical mode off too (as vim or less run), so the probe, which reads
+    /// the slave's flags, holds. The password-prompt case (echo off, canonical on: released) is
+    /// <see cref="RealPty_PasswordPrompt_ReachesOutput"/>, which runs on macOS too.
+    /// </summary>
+    [MacPtyFact]
+    public void RealPty_MacOS_RawModeNoEcho_StaysHeld()
+    {
+        using var log = new CheckLog();
+        using var session = HostSession.Start(HostPath, RunnerName, HoldAndRelease(log),
+            ["sh", "-c", "stty raw -echo; printf 'RAW> '; dd bs=1 count=1 >/dev/null 2>&1; stty sane; echo done-raw"]);
+
+        HostSession.WaitFor(() => log.Lines.Length >= 3, "three input-wait checks");
+        Assert.DoesNotContain("RAW> ", session.Output);
+        Assert.All(log.Lines, line => Assert.Equal("false", line));
+
+        session.Send("x");
+        var (exitCode, output, _) = session.WaitForExit();
+        Assert.Contains("RAW> ", output);
+        Assert.Contains("done-raw", output);
+        Assert.Equal(0, exitCode);
+    }
+
     // ── Windows only ─────────────────────────────────────────────────────────────────
 
     /// <summary>ConPTY has no probe: held text waits for exit, and no check is ever made.</summary>

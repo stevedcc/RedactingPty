@@ -96,7 +96,7 @@ internal abstract partial class UnixPty : IPtyRunner
     /// The input-wait probe for this platform's PTY master, or null where there is none. Parent only.
     /// </summary>
     private static IInputWaitProbe? CreateInputWaitProbe(int masterFd) =>
-        OperatingSystem.IsMacOS() ? new MacInputWaitProbe(masterFd)
+        OperatingSystem.IsMacOS() ? MacInputWaitProbe.Create(masterFd)
         : LinuxInputWaitProbe.TryCreate(masterFd, RuntimeInformation.ProcessArchitecture);
 
     /// <summary>

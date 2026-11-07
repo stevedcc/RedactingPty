@@ -241,4 +241,36 @@ public class InputWaitProbeTests
     /// </summary>
     [Fact]
     public void Mac_EchoOffRawMode_Holds() => Assert.False(MacInputWaitProbe.Releases(0));
+
+    // Which terminal's flags the macOS probe reads: the slave's (opened for each check), else the
+    // master's, else none (hold).
+
+    [Fact]
+    public void Mac_SlaveFlagsReadable_SlaveUsed_MasterNotAsked()
+    {
+        var masterAsked = false;
+        var probe = new MacInputWaitProbe(slaveFlags: () => Icanon, masterFlags: () => { masterAsked = true; return Echo | Icanon; });
+
+        Assert.True(probe.ChildAwaitsInput());
+        Assert.False(masterAsked);
+    }
+
+    [Fact]
+    public void Mac_SlaveUnreadable_MasterUsed()
+    {
+        Assert.True(new MacInputWaitProbe(slaveFlags: () => null, masterFlags: () => Icanon).ChildAwaitsInput());
+        Assert.False(new MacInputWaitProbe(slaveFlags: () => null, masterFlags: () => Echo | Icanon).ChildAwaitsInput());
+    }
+
+    [Fact]
+    public void Mac_NeitherReadable_Holds()
+    {
+        Assert.False(new MacInputWaitProbe(slaveFlags: () => null, masterFlags: () => null).ChildAwaitsInput());
+    }
+
+    [Fact]
+    public void Mac_SlaveSaysRawMode_Holds_EvenIfMasterWouldRelease()
+    {
+        Assert.False(new MacInputWaitProbe(slaveFlags: () => 0, masterFlags: () => Icanon).ChildAwaitsInput());
+    }
 }
