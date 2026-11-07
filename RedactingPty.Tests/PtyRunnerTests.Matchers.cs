@@ -122,6 +122,14 @@ public partial class PtyRunnerTests
         Assert.Equal(0, runner.Calls);
     }
 
+    [Fact]
+    public void CustomRunner_DefaultOverload_NullOptions_ThrowsArgumentNull()
+    {
+        IPtyRunner runner = new OneDotZeroRunner();
+
+        Assert.Throws<ArgumentNullException>(() => runner.Run(["x"], [], null!));
+    }
+
     // ── FallbackPty.Drain, in memory ─────────────────────────────────────────────────
 
     private sealed class ThrowOnSecondCall : IStreamMatcher

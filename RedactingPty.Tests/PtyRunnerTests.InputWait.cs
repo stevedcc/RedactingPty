@@ -174,7 +174,7 @@ public partial class PtyRunnerTests
                 var fields = stat[(stat.LastIndexOf(')') + 2)..].Split(' ');
                 parents[p] = int.Parse(fields[1]);
             }
-            catch (IOException) { } // exited while listed
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or FormatException) { } // exited while listed, or not ours
         }
 
         List<string> lines = [];
@@ -185,7 +185,7 @@ public partial class PtyRunnerTests
                 foreach (var task in Directory.EnumerateDirectories($"/proc/{p}/task"))
                     lines.Add(File.ReadAllText(Path.Combine(task, "syscall")).Trim());
             }
-            catch (IOException) { } // exited while listed
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { } // exited while listed, or not ours
         }
         return lines;
     }

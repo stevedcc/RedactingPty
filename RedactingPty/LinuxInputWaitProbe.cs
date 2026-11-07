@@ -9,8 +9,10 @@ namespace RedactingPty;
 /// terminal: a descriptor whose device is the slave's (by any path, or <c>dup</c>ed), or <c>/dev/tty</c>
 /// (5, 0) in a process whose controlling terminal is the slave (<c>getpass</c> reads fd 5 = /dev/tty).
 /// Thread states come from <c>/proc/[pid]/task/[tid]/syscall</c>. Any running thread, any file that
-/// can't be read or parsed (a process exiting mid-scan, Yama <c>ptrace_scope</c> &gt;= 2, <c>hidepid</c>),
-/// or a failed <c>tcgetpgrp</c>: false. Programs that wait in <c>poll</c>, <c>select</c> or <c>epoll</c>
+/// can't be read or parsed (a process exiting mid-scan, Yama <c>ptrace_scope</c> &gt;= 2), or a failed
+/// <c>tcgetpgrp</c>: false. A process <c>/proc</c> doesn't list at all (another user's, with <c>hidepid=2</c>,
+/// e.g. a setuid helper in the foreground group) can't be seen, so its threads are not checked: a
+/// release may then come while it runs (what it prints later is the residual limit). Programs that wait in <c>poll</c>, <c>select</c> or <c>epoll</c>
 /// (bash's readline waits in <c>pselect6</c>) are not detected: their prompt stays held.
 /// </summary>
 internal sealed partial class LinuxInputWaitProbe(Func<int> foregroundGroup, (uint Major, uint Minor) slave, IProcFs procFs, int readSyscall)

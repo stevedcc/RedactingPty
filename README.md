@@ -76,7 +76,8 @@ observable by the child through timing: base it on nothing secret.
 discards the held text and that chunk, writes `[output truncated: redaction failed]`, keeps
 reading and discarding the child's output (so the child never blocks on a full PTY or pipe), and
 rethrows the exception from `Run` once the child has exited. Nothing after the failure point is
-written. A runner that does not implement the `RedactionOptions` overload (the interface's
+written to that stream. With redirected output (`FallbackPty`) stdout and stderr are redacted on
+their own: the other stream keeps being redacted and written. A runner that does not implement the `RedactionOptions` overload (the interface's
 default) throws `NotSupportedException` for any matcher rather than redact less.
 
 ### Releasing held output at a prompt (1.1)
@@ -89,7 +90,7 @@ Released text is resolved like a flush: complete occurrences are masked first.
 
 | Platform | Released when |
 |---|---|
-| Linux | no thread of the PTY's foreground process group is running and one is blocked in `read` on the terminal (an fd on the slave, or `/dev/tty` with the slave as controlling terminal), from `/proc`. Anything unreadable: held. Programs that wait in `poll`/`select` (bash's readline) stay held. Detected: `read` builtins, Python's `input()` and `getpass`, OpenSSH passphrase prompts, `gpg` loopback prompts. |
+| Linux | no thread of the PTY's foreground process group is running and one is blocked in `read` on the terminal (an fd on the slave, or `/dev/tty` with the slave as controlling terminal), from `/proc`. Anything unreadable: held; a process `/proc` doesn't list (another user's, under `hidepid=2`) can't be checked. Programs that wait in `poll`/`select` (bash's readline) stay held. Detected: `read` builtins, Python's `input()` and `getpass`, OpenSSH passphrase prompts, `gpg` loopback prompts. |
 | macOS | the terminal's ECHO flag is off and ICANON is on (password and passphrase prompts). A plain `y/N` prompt (echo on) stays held until more output or exit; raw-mode programs (vim, less) clear both and are not released. |
 | Windows (ConPTY), pipes (`FallbackPty`) | never: no signal. Held text waits for more output or exit. |
 
