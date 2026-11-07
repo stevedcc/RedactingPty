@@ -13,7 +13,7 @@ namespace RedactingPty;
 ///   emit(r.Flush());
 /// </code>
 /// </summary>
-public sealed class StreamRedactor
+public sealed partial class StreamRedactor
 {
     private readonly IReadOnlyList<StreamReplacement> _replacements;
     private readonly int _overlap;
@@ -47,6 +47,8 @@ public sealed class StreamRedactor
     public string ProcessChunk(string chunk)
     {
         ArgumentNullException.ThrowIfNull(chunk);
+        if (_matchers is not null)
+            return ProcessWithMatchers(chunk);
 
         var window  = _tail + chunk;
         var safeLen = Math.Max(0, window.Length - _overlap);
@@ -94,6 +96,8 @@ public sealed class StreamRedactor
     /// </summary>
     public string Flush()
     {
+        if (_matchers is not null)
+            return ResolveTail();
         var result = _tail.Length > 0 ? ApplyReplacements(_tail) : "";
         _tail = "";
         return result;
