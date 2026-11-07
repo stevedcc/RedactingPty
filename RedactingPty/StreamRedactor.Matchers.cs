@@ -52,6 +52,15 @@ public sealed partial class StreamRedactor
         _prefixTables = [.. _replacements.Select(r => PrefixTable(r.Find))];
     }
 
+    /// <summary>
+    /// The redactor a runner builds for one stream: a <see cref="MatcherCarrier"/> brings its options'
+    /// matchers, any other list is the 1.0 constructor's.
+    /// </summary>
+    internal static StreamRedactor ForRunner(IReadOnlyList<StreamReplacement> replacements) =>
+        replacements is MatcherCarrier carrier
+            ? new StreamRedactor(carrier.Replacements, carrier.Options.Matchers)
+            : new StreamRedactor(replacements);
+
     /// <summary>True while a non-empty tail is held back, waiting for the next chunk.</summary>
     public bool HasHeld => _tail.Length > 0;
 

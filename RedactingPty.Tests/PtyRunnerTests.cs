@@ -156,7 +156,7 @@ public partial class PtyRunnerTests
             : Path.Combine(AppContext.BaseDirectory,
                 OperatingSystem.IsWindows() ? "RedactingPty.TestHost.exe" : "RedactingPty.TestHost");
 
-    private static HostResult RunHost(string[] replacementArgs, string[] childArgv)
+    private static HostResult RunHost(string[] replacementArgs, string[] childArgv, string? runner = null)
     {
         var hostPath = HostPath;
         Assert.True(File.Exists(hostPath), $"test host not found at {hostPath} ({HostPathVariable}: "
@@ -170,7 +170,7 @@ public partial class PtyRunnerTests
             UseShellExecute = false,
             StandardErrorEncoding = Encoding.UTF8,
         };
-        psi.ArgumentList.Add(RunnerName);
+        psi.ArgumentList.Add(runner ?? RunnerName);
         foreach (var a in replacementArgs) psi.ArgumentList.Add(a);
         psi.ArgumentList.Add("--");
         foreach (var a in childArgv) psi.ArgumentList.Add(a);
@@ -256,6 +256,16 @@ public sealed class PtyFactAttribute : FactAttribute
 public sealed class UnixPtyFactAttribute : FactAttribute
 {
     public UnixPtyFactAttribute()
+    {
+        if (!(OperatingSystem.IsLinux() || OperatingSystem.IsMacOS()))
+            Skip = "Unix (forkpty) runners only.";
+    }
+}
+
+/// <summary>A <see cref="TheoryAttribute"/> that runs only on Linux and macOS (the forkpty runners).</summary>
+public sealed class UnixPtyTheoryAttribute : TheoryAttribute
+{
+    public UnixPtyTheoryAttribute()
     {
         if (!(OperatingSystem.IsLinux() || OperatingSystem.IsMacOS()))
             Skip = "Unix (forkpty) runners only.";
