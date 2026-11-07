@@ -14,4 +14,20 @@ public interface IPtyRunner
     /// Returns the child's exit code.
     /// </summary>
     int Run(string[] argv, IReadOnlyList<StreamReplacement> replacements);
+
+    /// <summary>
+    /// As <see cref="Run(string[], IReadOnlyList{StreamReplacement})"/>, with the
+    /// <paramref name="options"/>' matchers applied alongside the plaintext replacements.
+    /// The built-in runners implement it. The default delegates when the options ask for nothing
+    /// and otherwise throws: a runner that does not know the options must not silently redact less.
+    /// </summary>
+    /// <exception cref="ArgumentNullException"><paramref name="options"/> is null.</exception>
+    /// <exception cref="NotSupportedException">The runner does not support <see cref="RedactionOptions"/>.</exception>
+    int Run(string[] argv, IReadOnlyList<StreamReplacement> replacements, RedactionOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        return options.Matchers.Count == 0 && !options.ReleaseWhenAwaitingInput
+            ? Run(argv, replacements)
+            : throw new NotSupportedException("This IPtyRunner does not support RedactionOptions.");
+    }
 }

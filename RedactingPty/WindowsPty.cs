@@ -133,6 +133,14 @@ internal sealed partial class WindowsPty : IPtyRunner
         out uint lpNumberOfBytesWritten, nint lpOverlapped);
 
     /// <summary>
+    /// As <see cref="Run(string[], IReadOnlyList{StreamReplacement})"/>, with the options' matchers.
+    /// <see cref="RedactionOptions.ReleaseWhenAwaitingInput"/> is ignored: ConPTY gives no signal that
+    /// the child waits for input, so held text is held until more output or exit.
+    /// </summary>
+    public int Run(string[] argv, IReadOnlyList<StreamReplacement> replacements, RedactionOptions options)
+        => Run(argv, MatcherCarrier.For(replacements, options));
+
+    /// <summary>
     /// Directly executes <paramref name="argv"/>[0] with the remaining elements as its
     /// argument list inside a ConPTY (no shell wrapper), writing redacted output to stdout.
     /// Returns the child process's exit code.
@@ -281,7 +289,7 @@ internal sealed partial class WindowsPty : IPtyRunner
             var decoder  = encoding.GetDecoder();
             var charBuf  = new char[encoding.GetMaxCharCount(readBuf.Length)];
             var stdout   = Console.OpenStandardOutput();
-            var redactor = new StreamRedactor(replacements);
+            var redactor = new RedactionRelay(StreamRedactor.ForRunner(replacements));
             var totalRead = new long[1]; // Interlocked counter shared with the drain loop below
             var readTask = Task.Run(() =>
             {
@@ -336,6 +344,8 @@ internal sealed partial class WindowsPty : IPtyRunner
             hPC = 0; // prevent double-close in finally
 
             readTask.Wait(); // drain any buffered output before returning
+            // A redaction failure: the output was drained, nothing after the failure point written.
+            redactor.ThrowIfFailed();
             return (int)exitCode;
         }
         finally

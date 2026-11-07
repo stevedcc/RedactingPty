@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.ExceptionServices;
 using System.Text;
 
 namespace RedactingPty;
@@ -20,6 +21,14 @@ namespace RedactingPty;
 /// </summary>
 internal sealed class FallbackPty : IPtyRunner
 {
+    /// <summary>
+    /// As <see cref="Run(string[], IReadOnlyList{StreamReplacement})"/> with the options' matchers on
+    /// both streams. <see cref="RedactionOptions.ReleaseWhenAwaitingInput"/> is ignored: there is no
+    /// terminal whose state could be checked.
+    /// </summary>
+    public int Run(string[] argv, IReadOnlyList<StreamReplacement> replacements, RedactionOptions options)
+        => Run(argv, MatcherCarrier.For(replacements, options));
+
     public int Run(string[] argv, IReadOnlyList<StreamReplacement> replacements)
     {
         if (argv is not { Length: > 0 } || string.IsNullOrEmpty(argv[0]))
@@ -66,12 +75,27 @@ internal sealed class FallbackPty : IPtyRunner
         // Task.WaitAll below is therefore essential — it is the true EOF gate.
         process.WaitForExit();
         Task.WaitAll(stdoutTask, stderrTask);
+        // A redaction failure on either stream: the streams were drained to EOF, nothing after the
+        // failure point was written; now report it.
+        ThrowFailures(stdoutTask.Result, stderrTask.Result);
         return process.ExitCode;
+    }
+
+    /// <summary>
+    /// Rethrows a stream's redaction failure with its original stack; when both streams failed, both
+    /// (an <see cref="AggregateException"/>, stdout's first), so neither cause is lost.
+    /// </summary>
+    internal static void ThrowFailures(ExceptionDispatchInfo? stdout, ExceptionDispatchInfo? stderr)
+    {
+        if (stdout is not null && stderr is not null)
+            throw new AggregateException("Redaction failed on both stdout and stderr.", stdout.SourceException, stderr.SourceException);
+        (stdout ?? stderr)?.Throw();
     }
 
     // Internal (not private) so RedactingPty.Tests can exercise the redaction
     // plumbing with in-memory streams, without spawning a subprocess.
-    internal static void Drain(
+    // Returns the redactor's failure, if any (see RedactionRelay): the source is still read to EOF.
+    internal static ExceptionDispatchInfo? Drain(
         Stream source, Stream dest,
         IReadOnlyList<StreamReplacement> replacements,
         Encoding encoding, Lock? writeLock)
@@ -79,7 +103,7 @@ internal sealed class FallbackPty : IPtyRunner
         var readBuf  = new byte[4096];
         var decoder  = encoding.GetDecoder();
         var charBuf  = new char[encoding.GetMaxCharCount(readBuf.Length)];
-        var redactor = new StreamRedactor(replacements);
+        var redactor = new RedactionRelay(StreamRedactor.ForRunner(replacements));
         int n;
         while ((n = source.Read(readBuf, 0, readBuf.Length)) > 0)
         {
@@ -99,5 +123,6 @@ internal sealed class FallbackPty : IPtyRunner
             else
                 dest.Write(tailBytes);
         }
+        return redactor.Failure;
     }
 }

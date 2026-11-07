@@ -15,7 +15,7 @@ namespace RedactingPty;
 /// while the parent keeps running and allocating code; any IL stub, JIT compilation, lazy
 /// symbol binding, precode patching or type initialiser in the child can then crash it
 /// (SIGSEGV) or corrupt the parent's code. So everything the child executes is prepared in
-/// <see cref="Run"/> before forkpty(): the argv strings are copied to native memory, the type
+/// <see cref="Run(string[], IReadOnlyList{StreamReplacement})"/> before forkpty(): the argv strings are copied to native memory, the type
 /// initialiser is forced, execvp/write/_exit are resolved to raw addresses (in the type
 /// initialiser) and copied into locals as unmanaged function pointers, and the diagnostic's
 /// pinned address and length are copied into locals too. The child branch then only reads
@@ -93,6 +93,21 @@ internal abstract partial class UnixPty : IPtyRunner
     protected abstract int Forkpty(out int amaster, IntPtr name, IntPtr termp, ref Winsize winp);
 
     /// <summary>
+    /// The input-wait probe for this platform's PTY master, or null where there is none. Parent only.
+    /// </summary>
+    private static IInputWaitProbe? CreateInputWaitProbe(int masterFd) =>
+        OperatingSystem.IsMacOS() ? MacInputWaitProbe.Create(masterFd)
+        : LinuxInputWaitProbe.TryCreate(masterFd, RuntimeInformation.ProcessArchitecture);
+
+    /// <summary>
+    /// As <see cref="Run(string[], IReadOnlyList{StreamReplacement})"/>, with the options' matchers.
+    /// The options travel inside the replacement list (<see cref="MatcherCarrier"/>), so the fork-safe
+    /// <c>Run</c> below is reused as it is.
+    /// </summary>
+    public int Run(string[] argv, IReadOnlyList<StreamReplacement> replacements, RedactionOptions options)
+        => Run(argv, MatcherCarrier.For(replacements, options));
+
+    /// <summary>
     /// Directly executes <paramref name="argv"/>[0] with the remaining elements as its
     /// argument list inside a PTY (no shell wrapper), writing redacted output to stdout.
     /// Returns the child process's exit code.
@@ -145,7 +160,7 @@ internal abstract partial class UnixPty : IPtyRunner
         var decoder  = encoding.GetDecoder();
         var charBuf  = new char[encoding.GetMaxCharCount(readBuf.Length)];
         var stdout   = Console.OpenStandardOutput();
-        var redactor = new StreamRedactor(replacements);
+        var redactor = StreamRedactor.ForRunner(replacements);
 
         int pid;
         int masterFd;
@@ -193,6 +208,17 @@ internal abstract partial class UnixPty : IPtyRunner
         // is observed, avoiding any cross-thread fd-close (which is UB on POSIX).
         var cancelDrain = false;
 
+        // Fails closed: if the redactor throws, the rest of the output is read and discarded, a marker
+        // is written instead, and the exception is rethrown after the child has exited.
+        var relay = new RedactionRelay(redactor);
+
+        // Releasing held output at a prompt: built here, in the parent after the fork, from the master.
+        var options = (replacements as MatcherCarrier)?.Options;
+        var releaser = HoldReleaser.Create(options?.ReleaseWhenAwaitingInput == true, TimeProvider.System,
+            () => CreateInputWaitProbe(masterFd));
+        if (options?.InputWaitChecked is { } onCheck)
+            releaser.Checked += onCheck;
+
         // Schedule the read loop on the thread pool immediately — before the stdin
         // thread and before waitpid — so it races to call read(masterFd) while the
         // child is still in its earliest execution. All read-loop state was allocated
@@ -207,9 +233,19 @@ internal abstract partial class UnixPty : IPtyRunner
             {
                 // Poll with a 200 ms timeout so we re-check cancelDrain regularly even
                 // when the child is idle. This avoids blocking indefinitely in read().
+                // While output is held back, the releaser shortens the timeout to its next check.
                 var pfd = new PollFd { fd = masterFd, events = POLLIN };
-                int pr = poll(ref pfd, 1, 200);
-                if (pr == 0) continue;           // timeout — loop back and check cancelDrain
+                int pr = poll(ref pfd, 1, releaser.PollTimeoutMilliseconds(relay.HasHeld));
+                if (pr == 0)                     // timeout — release at a prompt, then check cancelDrain
+                {
+                    if (releaser.ShouldRelease(relay.HasHeld))
+                    {
+                        var released = encoding.GetBytes(relay.Release());
+                        stdout.Write(released, 0, released.Length);
+                        stdout.Flush();
+                    }
+                    continue;
+                }
                 if (pr < 0)
                 {
                     if (Marshal.GetLastPInvokeError() == EINTR) continue;
@@ -228,8 +264,9 @@ internal abstract partial class UnixPty : IPtyRunner
                     if (errno == EINTR || errno == EAGAIN) continue; // retry
                     break; // EIO or other error (slave side closed after child exit)
                 }
+                releaser.OnOutput();
                 var charCount = decoder.GetChars(readBuf, 0, n, charBuf, 0);
-                var redacted  = redactor.ProcessChunk(new string(charBuf, 0, charCount));
+                var redacted  = relay.ProcessChunk(new string(charBuf, 0, charCount));
                 var outBytes  = encoding.GetBytes(redacted);
                 stdout.Write(outBytes, 0, outBytes.Length);
                 // Flush after every chunk so output appears immediately in the terminal.
@@ -248,7 +285,7 @@ internal abstract partial class UnixPty : IPtyRunner
             }
             else
             {
-                var tail = redactor.Flush();
+                var tail = relay.Flush();
                 if (tail.Length > 0)
                 {
                     stdout.Write(encoding.GetBytes(tail));
@@ -350,6 +387,7 @@ internal abstract partial class UnixPty : IPtyRunner
             Volatile.Write(ref cancelDrain, true);
         try { readTask.Wait(); } // if cancelled, exits within ≤ 200 ms; else already done
         finally { close(masterFd); }
+        relay.ThrowIfFailed();
 
         // Decode waitpid status: WIFEXITED vs WIFSIGNALED
         return (status & 0x7f) == 0
