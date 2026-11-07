@@ -39,6 +39,66 @@ and console state; `Run` blocks until the child exits and returns its exit code.
 Caller stdin is forwarded to the child so interactive programs (ssh, `kubectl exec`)
 work.
 
+### Custom matchers (1.1)
+
+When the caller cannot hand over a find-string as plaintext (for example a value it knows only
+by a keyed fingerprint), it supplies an `IStreamMatcher` through `RedactionOptions`:
+
+```csharp
+var options = new RedactionOptions { Matchers = [myMatcher], ReleaseWhenAwaitingInput = true };
+int exitCode = PtyRunnerFactory.Create().Run(argv, replacements, options);
+```
+
+The contract:
+
+- `MaxMatchLength` (read once, at least 1) bounds every match `FindMatches` reports.
+- `FindMatches(window, matches)` adds every match lying entirely inside the window, in window
+  coordinates; overlapping matches are fine. A match outside the window, empty, longer than
+  `MaxMatchLength` or with a null label throws `InvalidOperationException` (whose message names
+  indices, lengths and the matcher's type, never output text).
+- `PendingFrom(window)` is the smallest index from which a match could still start and end past
+  the window: the redactor holds back everything from there (the default holds the last
+  `MaxMatchLength - 1` characters). It must lie in `[0, window.Length]`.
+- **Thread safety:** a matcher must be stateless per call and safe to call from several threads
+  at once: the pipe runner (`FallbackPty`) drains stdout and stderr on two threads with one matcher.
+
+Masking with matchers: no character of a complete occurrence, plaintext or matcher, is ever
+emitted. Overlapping occurrences (sharing a character) merge into one run, written once with the
+label of its longest occurrence, then the leftmost, then plaintext before matcher, then list
+order; adjacent occurrences keep their own labels, and replacement text is never matched again.
+Without a matcher (the 1.0 overloads, or an empty list) the 1.0 algorithm runs unchanged.
+
+**Hold-back.** The plaintext part holds back only a real prefix of a `Find`; each matcher holds
+what its `PendingFrom` says. Whatever is held appears late, so a matcher's `PendingFrom` is
+observable by the child through timing: base it on nothing secret.
+
+**Failure is closed.** If a matcher (or the redactor) throws while output streams, the runner
+discards the held text and that chunk, writes `[output truncated: redaction failed]`, keeps
+reading and discarding the child's output (so the child never blocks on a full PTY or pipe), and
+rethrows the exception from `Run` once the child has exited. Nothing after the failure point is
+written. A runner that does not implement the `RedactionOptions` overload (the interface's
+default) throws `NotSupportedException` for any matcher rather than redact less.
+
+### Releasing held output at a prompt (1.1)
+
+A matcher that holds a lot (say, any text that could begin a multi-line secret) would hide an
+interactive prompt behind the held text. With `ReleaseWhenAwaitingInput`, once held output has
+been quiet for 50 ms the runner checks whether the child waits for terminal input, and again
+every 100 ms while output stays quiet. **Only a positive check releases; time alone never does.**
+Released text is resolved like a flush: complete occurrences are masked first.
+
+| Platform | Released when |
+|---|---|
+| Linux | no thread of the PTY's foreground process group is running and one is blocked in `read` on the terminal (an fd on the slave, or `/dev/tty` with the slave as controlling terminal), from `/proc`. Anything unreadable: held. Programs that wait in `poll`/`select` (bash's readline) stay held. Detected: `read` builtins, Python's `input()` and `getpass`, OpenSSH passphrase prompts, `gpg` loopback prompts. |
+| macOS | the terminal's ECHO flag is off and ICANON is on (password and passphrase prompts). A plain `y/N` prompt (echo on) stays held until more output or exit; raw-mode programs (vim, less) clear both and are not released. |
+| Windows (ConPTY), pipes (`FallbackPty`) | never: no signal. Held text waits for more output or exit. |
+
+**Residual limit.** Only *complete* occurrences are recognised; prefixes deliberately are not.
+Text that lies in no complete occurrence is emitted when it leaves the hold window, at a release
+or at exit, so a secret printed only in part (cut short, split by an input wait, completed later
+by another thread or a background job, or split between stdout and stderr under `FallbackPty`,
+which redacts each stream alone) shows that part. The 1.0 path behaves the same.
+
 ## Platform support
 
 | Platform | Implementation | Mechanism |
