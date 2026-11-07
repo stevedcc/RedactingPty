@@ -159,22 +159,51 @@ public partial class PtyRunnerTests
 
     // ── Windows only ─────────────────────────────────────────────────────────────────
 
-    /// <summary>ConPTY has no probe: held text waits for exit, and no check is ever made.</summary>
+    /// <summary>
+    /// ConPTY has no probe: held text waits for exit, and no check is ever made. The child prints the
+    /// prompt, then creates a marker file and waits for a line; once the marker exists the prompt has been
+    /// written, and it must not have reached the output. The answer is typed then and must come back at
+    /// exit. Delayed expansion (<c>/v:on</c>, <c>!x!</c>): <c>%x%</c> would be expanded when cmd parses the
+    /// line, before <c>set /p</c> has read anything.
+    /// </summary>
     [WindowsPtyFact]
     public void WindowsPty_NoProbe_HeldUntilExit()
     {
         using var log = new CheckLog();
-        using var session = HostSession.Start(HostPath, RunnerName, HoldAndRelease(log),
-            ["cmd", "/c", "set /p x=Continue? & echo answer-%x%"]);
+        var marker = Path.Combine(Path.GetTempPath(), $"redactingpty-prompted-{Guid.NewGuid():N}");
+        Assert.DoesNotContain(' ', marker); // the path goes into cmd's line unquoted
+        try
+        {
+            using var session = HostSession.Start(HostPath, RunnerName, HoldAndRelease(log),
+                ["cmd", "/v:on", "/c", $"echo Continue?& echo.>{marker}& set /p x=& echo answer-!x!"]);
 
-        session.Send("y\r\n");
-        var (exitCode, output, _) = session.WaitForExit();
+            HostSession.WaitFor(() => File.Exists(marker), "the child at its prompt");
+            Assert.True(!session.Output.Contains("Continue?"), $"the prompt was not held: {Escaped(session.Output)}");
 
-        Assert.Contains("Continue?", output);
-        Assert.Contains("answer-y", output);
-        Assert.Empty(log.Lines);
-        Assert.Equal(0, exitCode);
+            session.Send("y\r\n");
+            var (exitCode, output, stderr) = session.WaitForExit();
+
+            Assert.True(output.Contains("Continue?") && output.Contains("answer-y"),
+                $"expected the prompt and answer-y at exit (exit {exitCode}); output: {Escaped(output)}; stderr: {stderr}");
+            Assert.Empty(log.Lines);
+            Assert.Equal(0, exitCode);
+        }
+        finally
+        {
+            File.Delete(marker);
+        }
     }
+
+    /// <summary>Output with control characters shown as escapes, so a failure message carries all of it.</summary>
+    private static string Escaped(string text) =>
+        string.Concat(text.Select(c => c switch
+        {
+            '\x1b' => "\\e",
+            '\r' => "\\r",
+            '\n' => "\\n",
+            < ' ' => $"\\x{(int)c:x2}",
+            _ => c.ToString(),
+        }));
 
     // ── /proc helpers (Linux) ────────────────────────────────────────────────────────
 
