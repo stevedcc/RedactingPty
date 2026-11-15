@@ -125,6 +125,13 @@ int exitCode = PtyRunnerFactory.Create().Run(["./migrate"], [new(secret, "[REDAC
   `env PATH=... cmd` does); on Windows the program is found through the caller's `PATH`, and the
   given one reaches the child only as a variable.
 - `FallbackPty` applies the variables through `ProcessStartInfo.Environment`.
+- Names and values must be valid text: on Linux and macOS they are passed as UTF-8, and an
+  unpaired surrogate is replaced with U+FFFD, so the child gets a different string (which a
+  `StreamReplacement` of the original then doesn't match).
+- On Linux and macOS the inherited variables are copied from the C library's `environ` in the
+  caller's process just before the spawn. That copy is not safe against another thread calling
+  native `setenv`, `putenv` or `unsetenv` at the same moment (`System.Environment` never does on
+  Unix; only code calling libc directly can).
 - `ArgumentException`, before anything starts: a name null, empty or containing `=` or NUL, a value
   null or containing NUL (an empty value is allowed); on Windows, two names that differ only in case.
   Null or empty `Environment`: the child inherits the environment unchanged.

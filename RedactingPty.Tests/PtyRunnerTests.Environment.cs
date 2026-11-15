@@ -10,7 +10,8 @@ namespace RedactingPty.Tests;
 /// <see cref="RedactionOptions.Environment"/>: variables for the child only. The tests give them through
 /// the test host's <c>--env-file</c> (so no value is in the host's own argv) and seed the host's own
 /// environment for inherited variables. Every variable name carries a GUID, so nothing is inherited from
-/// the machine or CI by accident.
+/// the machine or CI by accident. The host's <c>own-NAME=</c> lines come from
+/// <c>Console.Error.WriteLine</c>, so they end with <see cref="Environment.NewLine"/> (CRLF on Windows).
 /// </summary>
 public partial class PtyRunnerTests
 {
@@ -48,8 +49,8 @@ public partial class PtyRunnerTests
         Assert.Contains($"got-{value}\n", r.Text);
         Assert.Equal(0, r.ExitCode);
         // The host's own environment, managed and native, is unchanged after Run.
-        Assert.Contains($"own-{name}=\n", r.Stderr);
-        Assert.Contains($"own-native-{name}=\n", r.Stderr);
+        Assert.Contains($"own-{name}={Environment.NewLine}", r.Stderr);
+        Assert.Contains($"own-native-{name}={Environment.NewLine}", r.Stderr);
     }
 
     [UnixPtyFact]
@@ -65,8 +66,8 @@ public partial class PtyRunnerTests
         Assert.Contains("got-new\n", r.Text);
         Assert.DoesNotContain("got-old", r.Text);
         Assert.Equal(0, r.ExitCode);
-        Assert.Contains($"own-{name}=old\n", r.Stderr);
-        Assert.Contains($"own-native-{name}=old\n", r.Stderr);
+        Assert.Contains($"own-{name}=old{Environment.NewLine}", r.Stderr);
+        Assert.Contains($"own-native-{name}=old{Environment.NewLine}", r.Stderr);
     }
 
     [UnixPtyFact]
@@ -176,8 +177,8 @@ public partial class PtyRunnerTests
 
         Assert.Contains($"got-{value}\n", r.Text);
         Assert.Equal(0, r.ExitCode);
-        Assert.Contains($"own-{name}=\n", r.Stderr);
-        Assert.Contains($"own-native-{name}=\n", r.Stderr);
+        Assert.Contains($"own-{name}={Environment.NewLine}", r.Stderr);
+        Assert.Contains($"own-native-{name}={Environment.NewLine}", r.Stderr);
     }
 
     [UnixPtyFact]
@@ -193,7 +194,7 @@ public partial class PtyRunnerTests
         Assert.Contains("got-new\n", r.Text);
         Assert.DoesNotContain("got-old", r.Text);
         Assert.Equal(0, r.ExitCode);
-        Assert.Contains($"own-{name}=old\n", r.Stderr);
+        Assert.Contains($"own-{name}=old{Environment.NewLine}", r.Stderr);
     }
 
     [WindowsPtyFact]
@@ -207,7 +208,7 @@ public partial class PtyRunnerTests
 
         Assert.Contains($"got-{value}\n", r.Text);
         Assert.Equal(0, r.ExitCode);
-        Assert.Contains($"own-{name}=\n", r.Stderr);
+        Assert.Contains($"own-{name}={Environment.NewLine}", r.Stderr);
     }
 
     // ── Windows (ConPTY) ─────────────────────────────────────────────────────────────
@@ -223,7 +224,7 @@ public partial class PtyRunnerTests
 
         Assert.Contains($"got-{value}\n", r.Text);
         Assert.Equal(0, r.ExitCode);
-        Assert.Contains($"own-{name}=\n", r.Stderr);
+        Assert.Contains($"own-{name}={Environment.NewLine}", r.Stderr);
     }
 
     [WindowsPtyFact]
@@ -240,7 +241,7 @@ public partial class PtyRunnerTests
         Assert.Contains("got-new\n", r.Text);
         Assert.DoesNotContain("got-old", r.Text);
         Assert.Equal(0, r.ExitCode);
-        Assert.Contains($"own-{name}=old\n", r.Stderr);
+        Assert.Contains($"own-{name}=old{Environment.NewLine}", r.Stderr);
     }
 
     [WindowsPtyFact]
@@ -319,6 +320,70 @@ public partial class PtyRunnerTests
             new Dictionary<string, string> { ["B"] = "v=w" });
 
         Assert.Equal(['A', '=', '\0', 'B', '=', 'v', '=', 'w', '\0', '\0'], block);
+    }
+
+    // ── the Linux environ addresses, in process (any OS) ─────────────────────────────
+
+    private static Func<string, nint> Exports(params (string Name, nint Address)[] exports) =>
+        name => exports.FirstOrDefault(e => e.Name == name).Address;
+
+    [Fact]
+    public void EnvironSlots_SameAddress_NoAlias()
+    {
+        var slots = EnvironSlots.ResolveLinux(Exports(("__environ", 0x1000), ("environ", 0x1000)), Exports(("__environ", 0x1000), ("environ", 0x1000)));
+
+        Assert.Equal((0x1000, 0), slots);
+    }
+
+    [Fact]
+    public void EnvironSlots_CopyRelocatedEnviron_IsTheAlias()
+    {
+        var slots = EnvironSlots.ResolveLinux(Exports(("__environ", 0x1000), ("environ", 0x2000)), Exports(("__environ", 0x1000), ("environ", 0x1000)));
+
+        Assert.Equal((0x1000, 0x2000), slots);
+    }
+
+    [Fact]
+    public void EnvironSlots_NoUnderscoreEnviron_LibcsOwnEnvironIsTheAlias()
+    {
+        // No __environ: the global-scope environ may be a copy in the executable, so libc's own
+        // environ (looked up in libc) is stored to as well when it differs.
+        var slots = EnvironSlots.ResolveLinux(Exports(("environ", 0x2000)), Exports(("environ", 0x1000)));
+
+        Assert.Equal((0x2000, 0x1000), slots);
+    }
+
+    [Fact]
+    public void EnvironSlots_NoUnderscoreEnviron_SameInLibc_NoAlias()
+    {
+        var slots = EnvironSlots.ResolveLinux(Exports(("environ", 0x1000)), Exports(("environ", 0x1000)));
+
+        Assert.Equal((0x1000, 0), slots);
+    }
+
+    [Fact]
+    public void EnvironSlots_NeitherName_Throws()
+    {
+        Assert.Throws<PlatformNotSupportedException>(() => EnvironSlots.ResolveLinux(Exports(), Exports()));
+    }
+
+    // ── the test host's --env-file ───────────────────────────────────────────────────
+
+    [Fact]
+    public void TestHost_EnvFileLineWithoutEquals_UsageError_NothingStarted()
+    {
+        using var temp = new TempFolder();
+        var envFile = Path.Combine(temp.Path, "bad.env");
+        File.WriteAllLines(envFile, [$"{NewName()}=ok", "NO_EQUALS_SIGN"]);
+        var marker = Path.Combine(temp.Path, "ran");
+
+        using var session = HostSession.Start(HostPath, "fallback", ["--env-file", envFile], CreatesMarker(marker));
+        session.CloseInput();
+        var (exitCode, _, stderr) = session.WaitForExit();
+
+        Assert.Equal(121, exitCode);
+        Assert.Contains("--env-file: a line with no '='", stderr);
+        Assert.False(File.Exists(marker), "the host ran the child");
     }
 
     // ── validation, in process ───────────────────────────────────────────────────────
