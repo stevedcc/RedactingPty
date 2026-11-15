@@ -19,9 +19,14 @@ namespace RedactingPty;
 /// <see cref="Run(string[], IReadOnlyList{StreamReplacement})"/> before forkpty(): the argv strings are copied to native memory, the type
 /// initialiser is forced, execvp/write/_exit are resolved to raw addresses (in the type
 /// initialiser) and copied into locals as unmanaged function pointers, and the diagnostic's
-/// pinned address and length are copied into locals too. The child branch then only reads
-/// those locals and calls libc directly through the pointers: no P/Invoke stub, no managed
-/// call, no allocation. The pointers are <c>SuppressGCTransition</c> calls, which the JIT
+/// pinned address and length are copied into locals too. With a
+/// <see cref="RedactionOptions.Environment"/>, the child's environment block is built in native
+/// memory before forkpty() too, and the addresses of the C environment pointer (Linux:
+/// <c>__environ</c>, plus <c>environ</c> where it is a different address; macOS:
+/// <c>_NSGetEnviron()</c>), resolved in the type initialiser, are copied into locals. The child
+/// branch then only reads those locals, compares them with 0, stores the block to the one or two
+/// environment pointers (with an environment only) and calls libc directly through the
+/// pointers: no P/Invoke stub, no managed call, no allocation. The pointers are <c>SuppressGCTransition</c> calls, which the JIT
 /// compiles into Run as plain indirect calls (no GC transition, no stub), provided Run is not
 /// debug code: in debug code (DisableOptimizations) every unmanaged call goes through an IL
 /// stub generated on first call, so the project builds this assembly optimised in every

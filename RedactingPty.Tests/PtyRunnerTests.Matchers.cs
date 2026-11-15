@@ -123,6 +123,26 @@ public partial class PtyRunnerTests
     }
 
     [Fact]
+    public void CustomRunner_DefaultOverload_WithEnvironmentThrows()
+    {
+        var runner = new OneDotZeroRunner();
+        IPtyRunner asInterface = runner;
+
+        Assert.Throws<NotSupportedException>(() => asInterface.Run(["x"], [],
+            new RedactionOptions { Environment = new Dictionary<string, string> { ["RPTY_NAME"] = "value" } }));
+        Assert.Equal(0, runner.Calls);
+    }
+
+    [Fact]
+    public void CustomRunner_DefaultOverload_EmptyEnvironmentDelegates()
+    {
+        var runner = new OneDotZeroRunner();
+
+        Assert.Equal(42, ((IPtyRunner)runner).Run(["x"], [], new RedactionOptions { Environment = new Dictionary<string, string>() }));
+        Assert.Equal(1, runner.Calls);
+    }
+
+    [Fact]
     public void CustomRunner_DefaultOverload_NullOptions_ThrowsArgumentNull()
     {
         IPtyRunner runner = new OneDotZeroRunner();

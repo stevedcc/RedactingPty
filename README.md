@@ -79,7 +79,8 @@ rethrows the exception from `Run` once the child has exited (both, as an `Aggreg
 stdout and stderr both failed under `FallbackPty`). Nothing after the failure point is
 written to that stream. With redirected output (`FallbackPty`) stdout and stderr are redacted on
 their own: the other stream keeps being redacted and written. A runner that does not implement the `RedactionOptions` overload (the interface's
-default) throws `NotSupportedException` for any matcher rather than redact less.
+default) throws `NotSupportedException` for any matcher, `ReleaseWhenAwaitingInput` or non-empty
+`Environment` rather than do less.
 
 ### Releasing held output at a prompt (1.1)
 
@@ -100,6 +101,33 @@ Text that lies in no complete occurrence is emitted when it leaves the hold wind
 or at exit, so a secret printed only in part (cut short, split by an input wait, completed later
 by another thread or a background job, or split between stdout and stderr under `FallbackPty`,
 which redacts each stream alone) shows that part. The 1.0 path behaves the same.
+
+### Setting the child's environment (1.2)
+
+`Environment` sets variables for the child only, on top of the environment it inherits (a name
+given there replaces the inherited value):
+
+```csharp
+var options = new RedactionOptions { Environment = new Dictionary<string, string> { ["DB_PASSWORD"] = secret } };
+int exitCode = PtyRunnerFactory.Create().Run(["./migrate"], [new(secret, "[REDACTED]")], options);
+```
+
+- The values never reach the child's command line (on Linux every local user can read a running
+  process's argv in `/proc/<pid>/cmdline`). They are still readable by whoever can read the
+  child's environment: on Linux and macOS the same user and root (`/proc/<pid>/environ` on Linux),
+  on Windows anyone who can open the child process.
+- The caller's own environment is never changed (not `System.Environment`, not the C library's):
+  the variables are built into the child's environment block before it starts. The runner's native
+  copies are zeroed and freed after the spawn, best effort; the caller's managed strings can't be.
+- Redaction still applies: a value the child prints is masked only if it is also a
+  `StreamReplacement` (or a matcher finds it).
+- A `PATH` given there is the one searched for the program on Linux and macOS (as
+  `env PATH=... cmd` does); on Windows the program is found through the caller's `PATH`, and the
+  given one reaches the child only as a variable.
+- `FallbackPty` applies the variables through `ProcessStartInfo.Environment`.
+- `ArgumentException`, before anything starts: a name null, empty or containing `=` or NUL, a value
+  null or containing NUL (an empty value is allowed); on Windows, two names that differ only in case.
+  Null or empty `Environment`: the child inherits the environment unchanged.
 
 ## Platform support
 
@@ -141,7 +169,13 @@ unaffected). So:
 - `execvp`, `write` and `_exit` are resolved with `NativeLibrary` in the parent and called
   from the child through unmanaged function pointers held in locals; the type initializer
   is forced before the fork; argv and the exec-failure message are in native or pinned
-  memory computed before the fork. The child branch is three direct calls into libc.
+  memory computed before the fork. The child branch is three direct calls into libc plus, with
+  an `Environment`, one pointer store (two where `__environ` and `environ` resolve to different
+  addresses) of the child's environment block, built in native memory before the fork, to the C
+  environment pointer, whose addresses the type initializer resolves (Linux: `__environ`, else
+  `environ`, in the global scope; macOS: `_NSGetEnviron()`). `execvp` then searches the child's
+  `PATH`. The store lands in the child's copy-on-write pages, so the parent's environment is
+  never written.
 - The library is always compiled optimised and `Run` is `AggressiveOptimization`:
   unoptimised (debug) JIT code routes even function-pointer calls through a stub built on
   first call, which would be in the child.
