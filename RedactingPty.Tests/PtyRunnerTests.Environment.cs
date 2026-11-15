@@ -163,6 +163,164 @@ public partial class PtyRunnerTests
         Assert.Equal(0, r.ExitCode);
     }
 
+    // ── FallbackPty ──────────────────────────────────────────────────────────────────
+
+    [UnixPtyFact]
+    public void Fallback_Environment_SetsVariableForTheChild()
+    {
+        using var temp = new TempFolder();
+        var (name, value) = (NewName(), NewValue());
+
+        var r = RunHost(["--env-file", temp.EnvFile(new Dictionary<string, string> { [name] = value }), "--report-own", name],
+            ["sh", "-c", $"echo \"got-${name}\""], runner: "fallback");
+
+        Assert.Contains($"got-{value}\n", r.Text);
+        Assert.Equal(0, r.ExitCode);
+        Assert.Contains($"own-{name}=\n", r.Stderr);
+        Assert.Contains($"own-native-{name}=\n", r.Stderr);
+    }
+
+    [UnixPtyFact]
+    public void Fallback_Environment_OverridesAnInheritedVariable()
+    {
+        using var temp = new TempFolder();
+        var name = NewName();
+
+        var r = RunHost(["--env-file", temp.EnvFile(new Dictionary<string, string> { [name] = "new" }), "--report-own", name],
+            ["sh", "-c", $"echo \"got-${name}\""], runner: "fallback",
+            hostEnvironment: new Dictionary<string, string> { [name] = "old" });
+
+        Assert.Contains("got-new\n", r.Text);
+        Assert.DoesNotContain("got-old", r.Text);
+        Assert.Equal(0, r.ExitCode);
+        Assert.Contains($"own-{name}=old\n", r.Stderr);
+    }
+
+    [WindowsPtyFact]
+    public void Fallback_Environment_SetsVariableForTheChild_Windows()
+    {
+        using var temp = new TempFolder();
+        var (name, value) = (NewName(), NewValue());
+
+        var r = RunHost(["--env-file", temp.EnvFile(new Dictionary<string, string> { [name] = value }), "--report-own", name],
+            ["cmd", "/c", $"echo got-%{name}%"], runner: "fallback");
+
+        Assert.Contains($"got-{value}\n", r.Text);
+        Assert.Equal(0, r.ExitCode);
+        Assert.Contains($"own-{name}=\n", r.Stderr);
+    }
+
+    // ── Windows (ConPTY) ─────────────────────────────────────────────────────────────
+
+    [WindowsPtyFact]
+    public void Windows_Environment_SetsVariableForTheChild()
+    {
+        using var temp = new TempFolder();
+        var (name, value) = (NewName(), NewValue());
+
+        var r = RunHost(["--env-file", temp.EnvFile(new Dictionary<string, string> { [name] = value }), "--report-own", name],
+            ["cmd", "/c", $"echo got-%{name}%"]);
+
+        Assert.Contains($"got-{value}\n", r.Text);
+        Assert.Equal(0, r.ExitCode);
+        Assert.Contains($"own-{name}=\n", r.Stderr);
+    }
+
+    [WindowsPtyFact]
+    public void Windows_Environment_OverridesAnInheritedVariable()
+    {
+        using var temp = new TempFolder();
+        var name = NewName();
+
+        // Given in lower case: Windows names ignore case, so it replaces the inherited one.
+        var r = RunHost(["--env-file", temp.EnvFile(new Dictionary<string, string> { [name.ToLowerInvariant()] = "new" }), "--report-own", name],
+            ["cmd", "/c", $"echo got-%{name}%"],
+            hostEnvironment: new Dictionary<string, string> { [name] = "old" });
+
+        Assert.Contains("got-new\n", r.Text);
+        Assert.DoesNotContain("got-old", r.Text);
+        Assert.Equal(0, r.ExitCode);
+        Assert.Contains($"own-{name}=old\n", r.Stderr);
+    }
+
+    [WindowsPtyFact]
+    public void Windows_Environment_InheritsUnoverriddenVariables()
+    {
+        using var temp = new TempFolder();
+        var (inherited, given) = (NewName(), NewName());
+
+        var r = RunHost(["--env-file", temp.EnvFile(new Dictionary<string, string> { [given] = "given-value" })],
+            ["cmd", "/c", $"echo got-%{inherited}%-%{given}%"],
+            hostEnvironment: new Dictionary<string, string> { [inherited] = "inherited-value" });
+
+        Assert.Contains("got-inherited-value-given-value\n", r.Text);
+        Assert.Equal(0, r.ExitCode);
+    }
+
+    [WindowsPtyFact]
+    public void Windows_Environment_NullOrEmpty_InheritsUnchanged()
+    {
+        using var temp = new TempFolder();
+        var name = NewName();
+        var seed = new Dictionary<string, string> { [name] = "seeded-value" };
+        string[] child = ["cmd", "/c", $"echo got-%{name}%"];
+
+        var none = RunHost([], child, hostEnvironment: seed);
+        var empty = RunHost(["--env-file", temp.EnvFile(new Dictionary<string, string>())], child, hostEnvironment: seed);
+
+        Assert.Contains("got-seeded-value\n", none.Text);
+        Assert.Equal(0, none.ExitCode);
+        Assert.Contains("got-seeded-value\n", empty.Text);
+        Assert.Equal(0, empty.ExitCode);
+    }
+
+    [WindowsPtyFact]
+    public void Windows_Environment_ValueStillRedactedInOutput()
+    {
+        using var temp = new TempFolder();
+        var (name, value) = (NewName(), NewValue());
+
+        var r = RunHost(["--env-file", temp.EnvFile(new Dictionary<string, string> { [name] = value }), "-r", value, Marker],
+            ["cmd", "/c", $"echo got-%{name}%"]);
+
+        r.AssertSecretAbsent(value);
+        Assert.Contains($"got-{Marker}\n", r.Text);
+        Assert.Equal(0, r.ExitCode);
+    }
+
+    // ── the Windows environment block, in process (any OS) ───────────────────────────
+
+    private static string Block(IReadOnlyDictionary<string, string> inherited, IReadOnlyDictionary<string, string> given) =>
+        new(ChildEnvironment.BuildWindowsBlock(inherited, given));
+
+    [Fact]
+    public void WindowsBlock_SortedByNameIgnoringCase()
+    {
+        var block = Block(new Dictionary<string, string> { ["b"] = "2", ["A"] = "1", ["c"] = "3" },
+            new Dictionary<string, string> { ["B2"] = "x", ["a1"] = "y" });
+
+        // Ordinal order would put the upper-case names first (A, B2, a1, b, c).
+        Assert.Equal("A=1\0a1=y\0b=2\0B2=x\0c=3\0\0", block);
+    }
+
+    [Fact]
+    public void WindowsBlock_GivenNameReplacesInheritedIgnoringCase()
+    {
+        var block = Block(new Dictionary<string, string> { ["Path"] = @"C:\old", ["X"] = "1" },
+            new Dictionary<string, string> { ["PATH"] = @"C:\new" });
+
+        Assert.Equal("PATH=C:\\new\0X=1\0\0", block);
+    }
+
+    [Fact]
+    public void WindowsBlock_EntriesAreNameEqualsValueNul_EndsWithTwoNuls()
+    {
+        var block = ChildEnvironment.BuildWindowsBlock(new Dictionary<string, string> { ["A"] = "" },
+            new Dictionary<string, string> { ["B"] = "v=w" });
+
+        Assert.Equal(['A', '=', '\0', 'B', '=', 'v', '=', 'w', '\0', '\0'], block);
+    }
+
     // ── validation, in process ───────────────────────────────────────────────────────
 
     /// <summary>

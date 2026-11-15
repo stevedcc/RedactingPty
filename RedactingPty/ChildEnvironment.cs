@@ -31,4 +31,45 @@ internal static class ChildEnvironment
                 throw new ArgumentException($"Environment variable names that differ only in case: '{name}' (Windows names ignore case).", nameof(environment));
         }
     }
+
+    /// <summary>
+    /// The <c>lpEnvironment</c> block for <c>CreateProcessW</c> with <c>CREATE_UNICODE_ENVIRONMENT</c>:
+    /// <paramref name="inherited"/> with <paramref name="given"/> applied (names compared
+    /// <see cref="StringComparer.OrdinalIgnoreCase"/>, a given name replacing an inherited one, in the
+    /// given name's case), sorted by name with <see cref="StringComparer.OrdinalIgnoreCase"/> (the
+    /// documented order: case-insensitive, Unicode order, without regard to locale), each entry
+    /// <c>name=value\0</c>, then one more <c>\0</c>.
+    /// </summary>
+    public static char[] BuildWindowsBlock(IReadOnlyDictionary<string, string> inherited, IReadOnlyDictionary<string, string> given)
+    {
+        var merged = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (name, value) in inherited)
+            merged[name] = value;
+        foreach (var (name, value) in given)
+        {
+            merged.Remove(name); // the inherited name's case goes with it
+            merged[name] = value;
+        }
+        var names = merged.Keys.ToArray();
+        Array.Sort(names, StringComparer.OrdinalIgnoreCase);
+
+        var length = 1;
+        foreach (var name in names)
+            length += name.Length + 1 + merged[name].Length + 1;
+        if (names.Length == 0)
+            length++; // an empty block is still two NULs
+        var block = new char[length];
+        var at = 0;
+        foreach (var name in names)
+        {
+            name.CopyTo(block.AsSpan(at));
+            at += name.Length;
+            block[at++] = '=';
+            merged[name].CopyTo(block.AsSpan(at));
+            at += merged[name].Length;
+            block[at++] = '\0';
+        }
+        // The array is zero-initialised: the remaining one (or two) chars are the terminator.
+        return block;
+    }
 }
