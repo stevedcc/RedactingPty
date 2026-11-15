@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
+using System.Text;
 
 namespace RedactingPty;
 
@@ -51,6 +52,115 @@ internal abstract partial class UnixPty : IPtyRunner
     private static readonly nint ExecvpAddress = NativeLibrary.GetExport(Libc, "execvp");
     private static readonly nint WriteAddress  = NativeLibrary.GetExport(Libc, "write");
     private static readonly nint ExitAddress   = NativeLibrary.GetExport(Libc, "_exit");
+
+    // The C environment pointer the child stores its environment block to, before execvp (whose PATH
+    // search and getenv read it): Primary always, Alias too where it is non-zero. Linux: resolved in the
+    // global scope (the executable, then the libraries in load order). Primary is __environ, the name
+    // glibc's and musl's execvp and getenv read (environ if __environ isn't exported); Alias is environ
+    // when it resolves to a different address, which a copy relocation (R_X86_64_COPY) of environ in
+    // the executable makes: a store to that copy alone would leave libc's __environ unchanged.
+    // macOS: _NSGetEnviron() returns the address of environ (as dotnet/runtime's SystemNative_GetEnviron).
+    private static readonly (nint Primary, nint Alias) EnvironSlots = ResolveEnvironSlots();
+
+    private static unsafe (nint Primary, nint Alias) ResolveEnvironSlots()
+    {
+        if (OperatingSystem.IsMacOS())
+        {
+            var nsGetEnviron = (delegate* unmanaged<nint>)NativeLibrary.GetExport(Libc, "_NSGetEnviron");
+            return (nsGetEnviron(), 0);
+        }
+        var global = NativeLibrary.GetMainProgramHandle();
+        if (!NativeLibrary.TryGetExport(global, "__environ", out var primary)
+            && !NativeLibrary.TryGetExport(global, "environ", out primary))
+            throw new PlatformNotSupportedException("redactingpty: the C library exports neither __environ nor environ.");
+        var alias = NativeLibrary.TryGetExport(global, "environ", out var environ) && environ != primary ? environ : 0;
+        return (primary, alias);
+    }
+
+    /// <summary>One <c>NAME=VALUE</c> string of the child's native environment block.</summary>
+    private readonly record struct NativeEntry(nint Pointer, int Length, bool Given);
+
+    /// <summary>
+    /// Builds the child's environment before the fork, as a native NULL-terminated <c>char**</c>: the
+    /// entries of the native environment at <paramref name="environSlot"/>, copied byte for byte, except
+    /// those whose name (the bytes before the first <c>=</c>) is in <paramref name="given"/>, then the
+    /// given variables, UTF-8. Every string it allocates is added to <paramref name="entries"/>; free
+    /// with <see cref="FreeNativeEnvironment"/>. Parent only.
+    /// </summary>
+    private static unsafe nint BuildNativeEnvironment(
+        IReadOnlyDictionary<string, string> given, nint environSlot, List<NativeEntry> entries)
+    {
+        var givenNames = new List<byte[]>(given.Count);
+        foreach (var name in given.Keys)
+            givenNames.Add(Encoding.UTF8.GetBytes(name));
+        nint block = 0;
+        try
+        {
+            var inherited = *(byte***)environSlot;
+            for (var p = inherited; p != null && *p != null; p++)
+            {
+                var entry = MemoryMarshal.CreateReadOnlySpanFromNullTerminated(*p);
+                var eq = entry.IndexOf((byte)'=');
+                var name = eq < 0 ? entry : entry[..eq];
+                if (IsGiven(name, givenNames))
+                    continue;
+                var copy = Marshal.AllocHGlobal(entry.Length + 1);
+                entries.Add(new NativeEntry(copy, entry.Length + 1, Given: false));
+                var target = new Span<byte>((void*)copy, entry.Length + 1);
+                entry.CopyTo(target);
+                target[^1] = 0;
+            }
+            foreach (var (name, value) in given)
+            {
+                // name=value\0, encoded straight into native memory (no managed copy of the value).
+                var nameLength  = Encoding.UTF8.GetByteCount(name);
+                var valueLength = Encoding.UTF8.GetByteCount(value);
+                var length      = nameLength + 1 + valueLength + 1;
+                var native = Marshal.AllocHGlobal(length);
+                entries.Add(new NativeEntry(native, length, Given: true));
+                var target = new Span<byte>((void*)native, length);
+                Encoding.UTF8.GetBytes(name, target);
+                target[nameLength] = (byte)'=';
+                Encoding.UTF8.GetBytes(value, target[(nameLength + 1)..]);
+                target[^1] = 0;
+            }
+            block = Marshal.AllocHGlobal(nint.Size * (entries.Count + 1));
+            var pointers = (nint*)block;
+            for (int i = 0; i < entries.Count; i++)
+                pointers[i] = entries[i].Pointer;
+            pointers[entries.Count] = 0;
+            return block;
+        }
+        catch
+        {
+            FreeNativeEnvironment(block, entries);
+            throw;
+        }
+
+        static bool IsGiven(ReadOnlySpan<byte> name, List<byte[]> givenNames)
+        {
+            foreach (var g in givenNames)
+            {
+                if (name.SequenceEqual(g))
+                    return true;
+            }
+            return false;
+        }
+    }
+
+    /// <summary>Zeroes the given variables' strings and frees the whole block (parent, after the spawn).</summary>
+    private static unsafe void FreeNativeEnvironment(nint block, List<NativeEntry> entries)
+    {
+        foreach (var entry in entries)
+        {
+            if (entry.Given)
+                NativeMemory.Clear((void*)entry.Pointer, (nuint)entry.Length);
+            Marshal.FreeHGlobal(entry.Pointer);
+        }
+        entries.Clear();
+        if (block != 0)
+            Marshal.FreeHGlobal(block);
+    }
 
     [StructLayout(LayoutKind.Sequential)]
     protected struct Winsize
@@ -162,6 +272,12 @@ internal abstract partial class UnixPty : IPtyRunner
         var stdout   = Console.OpenStandardOutput();
         var redactor = StreamRedactor.ForRunner(replacements);
 
+        // The child's environment, read before the fork (validated by MatcherCarrier.For); null or
+        // empty: the child inherits the environment unchanged and no native block is built.
+        var childEnvironment = (replacements as MatcherCarrier)?.Options.Environment;
+        List<NativeEntry>? nativeEnvEntries = null;
+        nint nativeEnvp = 0;
+
         int pid;
         int masterFd;
         unsafe
@@ -178,14 +294,31 @@ internal abstract partial class UnixPty : IPtyRunner
             var childExit   = (delegate* unmanaged[SuppressGCTransition]<int, void>)ExitAddress;
             nint execFailedMsg       = ExecFailedMsgPin.AddrOfPinnedObject();
             nint execFailedMsgLength = ExecFailedMsg.Length;
+            // The environment pointer(s) and the child's block, in locals: the child stores the block
+            // to them with plain stores (in its own copy-on-write pages: the parent's environment is
+            // never written), so execvp searches the child's PATH and the child inherits the block.
+            nint environAddress = EnvironSlots.Primary;
+            nint environAlias   = EnvironSlots.Alias;
+            if (childEnvironment is { Count: > 0 })
+            {
+                nativeEnvEntries = [];
+                nativeEnvp = BuildNativeEnvironment(childEnvironment, environAddress, nativeEnvEntries);
+            }
 
             pid = Forkpty(out masterFd, IntPtr.Zero, IntPtr.Zero, ref winsize);
 
             if (pid == 0)
             {
-                // Child: reads only the locals above and calls libc through the pointers.
-                // Nothing here may be a managed call, an allocation or a static access.
+                // Child: reads only the locals above, stores to the environment pointer(s) and calls
+                // libc through the pointers. Nothing here may be a managed call, an allocation or a
+                // static access.
                 // SuppressGCTransition is safe here: the child has no other threads and no GC.
+                if (nativeEnvp != 0)
+                {
+                    *(nint*)environAddress = nativeEnvp;
+                    if (environAlias != 0)
+                        *(nint*)environAlias = nativeEnvp;
+                }
                 childExecvp(nativeExe, nativeArgv);
                 // execvp only returns on failure (command not found / not executable).
                 childWrite(2, execFailedMsg, execFailedMsgLength);
@@ -198,6 +331,10 @@ internal abstract partial class UnixPty : IPtyRunner
         for (int i = 0; i < nativeStrings.Length; i++)
             Marshal.FreeHGlobal(nativeStrings[i]);
         Marshal.FreeHGlobal(nativeArgv);
+        // The child's environment block: the given values zeroed, then all of it freed (the child has
+        // its own copy via CoW, replaced by exec).
+        if (nativeEnvEntries is not null)
+            FreeNativeEnvironment(nativeEnvp, nativeEnvEntries);
 
         if (pid < 0)
             throw new Exception("forkpty failed");

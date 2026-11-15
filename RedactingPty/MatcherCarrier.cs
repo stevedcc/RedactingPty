@@ -29,6 +29,7 @@ internal sealed class MatcherCarrier : IReadOnlyList<StreamReplacement>
         ArgumentNullException.ThrowIfNull(replacements);
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(options.Matchers);
+        ChildEnvironment.Validate(options.Environment);
         return new MatcherCarrier(replacements, options);
     }
 

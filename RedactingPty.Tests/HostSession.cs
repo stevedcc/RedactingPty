@@ -27,7 +27,9 @@ internal sealed class HostSession : IDisposable
         _stderrTask = process.StandardError.ReadToEndAsync();
     }
 
-    public static HostSession Start(string hostPath, string runner, string[] hostArgs, string[] childArgv)
+    /// <param name="hostEnvironment">Variables set in the host's own environment (inherited by its child).</param>
+    public static HostSession Start(string hostPath, string runner, string[] hostArgs, string[] childArgv,
+        IReadOnlyDictionary<string, string>? hostEnvironment = null)
     {
         Assert.True(File.Exists(hostPath), $"test host not found at {hostPath}");
         var psi = new ProcessStartInfo(hostPath)
@@ -38,6 +40,8 @@ internal sealed class HostSession : IDisposable
             UseShellExecute = false,
             StandardErrorEncoding = Encoding.UTF8,
         };
+        foreach (var (name, value) in hostEnvironment ?? new Dictionary<string, string>())
+            psi.Environment[name] = value;
         psi.ArgumentList.Add(runner);
         foreach (var a in hostArgs) psi.ArgumentList.Add(a);
         psi.ArgumentList.Add("--");
