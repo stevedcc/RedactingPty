@@ -45,6 +45,13 @@ internal sealed class FallbackPty : IPtyRunner
         };
         foreach (var a in argv.AsSpan(1))
             startInfo.ArgumentList.Add(a);
+        // The child's environment: startInfo.Environment starts from what Process.Start passes
+        // without it, so inheritance is unchanged; the given names replace inherited ones.
+        if ((replacements as MatcherCarrier)?.Options.Environment is { Count: > 0 } environment)
+        {
+            foreach (var (name, value) in environment)
+                startInfo.Environment[name] = value;
+        }
 
         using var process = new Process { StartInfo = startInfo };
         process.Start();

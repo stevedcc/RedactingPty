@@ -4,8 +4,9 @@ namespace RedactingPty;
 
 /// <summary>
 /// Carries <see cref="RedactionOptions"/> to a runner's 1.0 <c>Run(argv, replacements)</c> inside the
-/// replacement list, so the options overloads reuse that method unchanged (UnixPty's <c>Run</c> holds
-/// the fork-safe child path, whose signature and code are frozen). It enumerates as the plain
+/// replacement list, so the options overloads reuse that method (UnixPty's <c>Run</c> holds the
+/// fork-safe child path; its signature is frozen, and its body reads the options' environment from
+/// here before the fork, to build the child's environment block). It enumerates as the plain
 /// replacements; <see cref="StreamRedactor.ForRunner"/> unwraps it. No instance state is added to the
 /// runners, so concurrent <c>Run</c> calls stay independent.
 /// </summary>
@@ -29,6 +30,7 @@ internal sealed class MatcherCarrier : IReadOnlyList<StreamReplacement>
         ArgumentNullException.ThrowIfNull(replacements);
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(options.Matchers);
+        ChildEnvironment.Validate(options.Environment);
         return new MatcherCarrier(replacements, options);
     }
 

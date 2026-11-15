@@ -59,6 +59,7 @@ internal sealed partial class WindowsPty : IPtyRunner
     }
 
     private const uint EXTENDED_STARTUPINFO_PRESENT        = 0x00080000;
+    private const uint CREATE_UNICODE_ENVIRONMENT          = 0x00000400; // lpEnvironment is UTF-16
     private const int  PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE = 0x00020016;
     private const int  STARTF_USESTDHANDLES                = 0x00000100;
     private const uint INFINITE                            = 0xFFFFFFFF;
@@ -168,6 +169,8 @@ internal sealed partial class WindowsPty : IPtyRunner
         nint hPC        = 0;
         nint attrList   = 0;
         nint hProcess   = 0;
+        nint envBlock   = 0;
+        nint envBlockBytes = 0;
         bool attrListInitialized = false;
 
         try
@@ -226,11 +229,37 @@ internal sealed partial class WindowsPty : IPtyRunner
             var cmdLine = new char[cmdStr.Length + 1]; // +1 for null terminator
             cmdStr.CopyTo(0, cmdLine, 0, cmdStr.Length);
 
-            if (!CreateProcess(null, cmdLine,
+            // The child's environment, when given: a UTF-16 block in native memory, zeroed and freed
+            // after CreateProcess (in finally). Without one, lpEnvironment is 0 (inherit) as before.
+            var creationFlags = EXTENDED_STARTUPINFO_PRESENT;
+            if ((replacements as MatcherCarrier)?.Options.Environment is { Count: > 0 } environment)
+            {
+                // The inherited set is the managed view, which on Windows reads the live process block.
+                // The hidden "=C:"-style per-drive directory entries are not in it and are dropped (cmd
+                // recreates them; Process.Start drops them too).
+                var inherited = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                foreach (System.Collections.DictionaryEntry e in Environment.GetEnvironmentVariables())
+                    inherited[(string)e.Key] = (string?)e.Value ?? "";
+                var block = ChildEnvironment.BuildWindowsBlock(inherited, environment);
+                envBlockBytes = (nint)block.Length * sizeof(char);
+                envBlock = Marshal.AllocHGlobal(envBlockBytes);
+                Marshal.Copy(block, 0, envBlock, block.Length);
+                Array.Clear(block);
+                creationFlags |= CREATE_UNICODE_ENVIRONMENT;
+            }
+
+            var created = CreateProcess(null, cmdLine,
                     0, 0, false,
-                    EXTENDED_STARTUPINFO_PRESENT, 0, null,
-                    ref si, out var pi))
-                throw new Exception($"CreateProcess failed (Win32 error {Marshal.GetLastWin32Error()})");
+                    creationFlags, envBlock, null,
+                    ref si, out var pi);
+            var createError = Marshal.GetLastWin32Error();
+            if (envBlock != 0)
+            {
+                ZeroAndFree(envBlock, envBlockBytes);
+                envBlock = 0;
+            }
+            if (!created)
+                throw new Exception($"CreateProcess failed (Win32 error {createError})");
 
             hProcess = pi.hProcess;
             CloseHandle(pi.hThread); // hThread is not needed after process is created
@@ -358,7 +387,15 @@ internal sealed partial class WindowsPty : IPtyRunner
             if (hPC        != 0)     ClosePseudoConsole(hPC);
             if (attrListInitialized) DeleteProcThreadAttributeList(attrList);
             if (attrList   != 0)     Marshal.FreeHGlobal(attrList);
+            if (envBlock   != 0)     ZeroAndFree(envBlock, envBlockBytes);
         }
+    }
+
+    /// <summary>Zeroes <paramref name="bytes"/> bytes at <paramref name="block"/> (the child's environment), then frees it.</summary>
+    private static unsafe void ZeroAndFree(nint block, nint bytes)
+    {
+        NativeMemory.Clear((void*)block, (nuint)bytes);
+        Marshal.FreeHGlobal(block);
     }
 
     /// <summary>

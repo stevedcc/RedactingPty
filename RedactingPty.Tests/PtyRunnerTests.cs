@@ -156,7 +156,9 @@ public partial class PtyRunnerTests
             : Path.Combine(AppContext.BaseDirectory,
                 OperatingSystem.IsWindows() ? "RedactingPty.TestHost.exe" : "RedactingPty.TestHost");
 
-    private static HostResult RunHost(string[] replacementArgs, string[] childArgv, string? runner = null)
+    /// <param name="hostEnvironment">Variables set in the host's own environment (inherited by its child).</param>
+    private static HostResult RunHost(string[] replacementArgs, string[] childArgv, string? runner = null,
+        IReadOnlyDictionary<string, string>? hostEnvironment = null)
     {
         var hostPath = HostPath;
         Assert.True(File.Exists(hostPath), $"test host not found at {hostPath} ({HostPathVariable}: "
@@ -170,6 +172,8 @@ public partial class PtyRunnerTests
             UseShellExecute = false,
             StandardErrorEncoding = Encoding.UTF8,
         };
+        foreach (var (name, value) in hostEnvironment ?? new Dictionary<string, string>())
+            psi.Environment[name] = value;
         psi.ArgumentList.Add(runner ?? RunnerName);
         foreach (var a in replacementArgs) psi.ArgumentList.Add(a);
         psi.ArgumentList.Add("--");
