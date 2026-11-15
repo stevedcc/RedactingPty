@@ -24,8 +24,16 @@ differ only in case on Windows; test sets per runner (Windows uses `cmd` childre
 Unix-only); the secret stays out of the test host's own argv; the default interface method throws only
 for a non-empty `Environment`, with a test; "nothing changes in the child" is restated as what may and
 may not run there, with R0's by-construction enumeration; the doc and csproj-comment drift is listed.
-Rejected, with the reason beside each decision below: resolving `environ` through the libc handle, and
-both reviewers' claims about where `execvpe` reads `PATH` from.
+Rejected, with the reason beside the decision below: both reviewers' claims about where `execvpe`
+reads `PATH` from.
+
+Round 2 (MiMo, GLM-5.3): both "no", for one reason. Round 1's fix rejected the libc-scope lookup on a
+reversed model, so it is corrected: `execvp` and `getenv` read `__environ`, and a copy relocation copies
+only the symbol it names, so an `environ` copy in the executable is a dead second slot, not the live
+one. Linux now resolves `__environ` (falling back to `environ`) and `environ` too, and stores to both
+when they differ. Also: the Fallback tests move to Task 2 with the code they test (Task 1's commit
+would have been red), with a Windows Fallback test added; the `PATH` test runs its script as argv
+directly; `--env-file` rejects a line with no `=`; the `ToString` doc line is exact.
 
 ## Why
 
@@ -48,8 +56,9 @@ public IReadOnlyDictionary<string, string>? Environment { get; init; }
 
 The doc comment also says: the caller's process environment is never changed; the parent's native
 copies are zeroed and freed after the spawn, best effort (the caller's managed strings can't be
-zeroed); record equality compares the dictionary by reference, and `ToString` shows its type, never its
-contents. Qualify `System.Environment` inside `RedactionOptions` where the property now shadows it.
+zeroed); record equality compares the dictionary by reference, and `ToString` shows the
+dictionary's own `ToString()` (a BCL dictionary's is its type name, never its contents). Qualify
+`System.Environment` inside `RedactionOptions` where the property now shadows it.
 
 **Validation, in one place:** an internal static validator called from `MatcherCarrier.For`, which
 every built-in runner's options overload goes through before anything is spawned. `ArgumentException`,
@@ -70,24 +79,31 @@ the native `environ`, not `System.Environment.GetEnvironmentVariables()`: on Uni
 inherits today, and it round-trips invalid UTF-8 lossily. (Reading `environ` while another thread calls
 native `setenv` is the usual POSIX hazard, the one `execvp` already takes today.)
 
-**The mechanism: assign `environ` in the child, nothing else.** Resolve the address of the C `environ`
-variable in the type initialiser (beside `ExecvpAddress`), copy it into a `Run` local before the fork,
-and in the child branch, before `childExecvp`, do one plain store, inline in `Run`:
-`if (nativeEnvp != 0) *(nint*)environAddress = nativeEnvp;` (never `Marshal.WriteIntPtr` or a helper:
-those are managed calls). `execvp` itself is unchanged: its `PATH` search, the `ENOEXEC` `/bin/sh`
-fallback and `EACCES` handling stay exactly as they are, and it searches the **child's** `PATH`, as
-`env VAR=x cmd` does (glibc's and musl's `execvp` take `PATH` from `getenv`, which reads `environ`, and
-so does macOS's). The store lands in the child's copy-on-write page, so the parent's `environ` is never
-written, by construction. Resolving the address:
+**The mechanism: assign `environ` in the child, nothing else.** Resolve the address (or addresses,
+below) of the C environment pointer in the type initialiser (beside `ExecvpAddress`), copy them into
+`Run` locals before the fork, and in the child branch, before `childExecvp`, do plain stores, inline in
+`Run`: `if (nativeEnvp != 0) { *(nint*)environAddress = nativeEnvp; if (environAlias != 0)
+*(nint*)environAlias = nativeEnvp; }` (never `Marshal.WriteIntPtr` or a helper: those are managed
+calls). `execvp` itself is unchanged: its `PATH` search, the `ENOEXEC` `/bin/sh` fallback and `EACCES`
+handling stay exactly as they are, and it searches the **child's** `PATH`, as `env VAR=x cmd` does
+(glibc's `execvp` is `__execvpe (file, argv, __environ)`, musl's the same, and both take `PATH` from
+`getenv`, which reads `__environ`; macOS's reads its `environ`). The stores land in the child's
+copy-on-write pages, so the parent's environment is never written, by construction. Resolving the
+addresses:
 
-- **Linux:** `NativeLibrary.TryGetExport(NativeLibrary.GetMainProgramHandle(), "environ", ...)`, the
-  global-scope lookup, which returns the definition every reference in the process was bound to: the
-  host executable's own copy if it has a copy relocation for `environ`, else libc's. Not the `Libc`
-  handle (round 1, MiMo): a lookup in libc's own scope returns libc's definition even when a copy
-  relocation has moved the live variable into the executable, the very case it was meant to guard.
-  Show in the commit message what each host has, `readelf -rW <host> | grep environ` for the JIT
-  apphost and the NativeAOT host (the net10.0 apphost has `R_X86_64_GLOB_DAT`, no copy). Not found:
-  throw in the type initialiser (a clear failure, never a child that silently inherits).
+- **Linux:** through the global scope (`NativeLibrary.GetMainProgramHandle()`, `RTLD_DEFAULT`), resolve
+  `__environ`, the name `execvp` and `getenv` read, falling back to `environ` if `__environ` isn't
+  exported; that is `environAddress`. Also resolve `environ`; if it is a different address,
+  `environAlias` is that address (else 0), and the child stores the block to both. In libc the names are
+  one object (this machine's glibc: `__environ` GLOBAL, `environ` and `_environ` WEAK, all at
+  `0x1f6de8`), but a copy relocation is per symbol name: a host executable with `R_X86_64_COPY` for
+  `environ` gets a second slot under that name while libc keeps reading `__environ`, so a store to
+  `environ` alone would write a dead copy and the child would silently inherit. The second store keeps
+  the executable's own `environ` readers consistent too. Show in the commit message, for the JIT
+  apphost and the NativeAOT host: `readelf -rW <host> | grep environ`, what each lookup returned, and
+  whether the two addresses differed (the net10.0 apphost has `R_X86_64_GLOB_DAT` for `environ`, no
+  copy, checked with `readelf` on a build here). Neither name found: throw in the type initialiser (a
+  clear failure, never a child that silently inherits).
 - **macOS:** resolve `_NSGetEnviron` from `Libc` and call it in the type initialiser (the parent); it
   returns the `char***` (dotnet/runtime's `SystemNative_GetEnviron` makes the same split).
 
@@ -103,16 +119,17 @@ its branch: no call, allocation, stub, static or type-initialiser access, lazy b
 native environment is built. The existing fork-safety tests stay green unchanged, on the JIT and the
 NativeAOT hosts. As in R0, green tests are not the proof: the commit message enumerates every
 instruction path the child executes between `forkpty` returning 0 and `execvp`/`_exit`, with and
-without an environment, and shows each is a read of a `Run` local, the compare, the store, or one of
-the three existing calls through the pointers.
+without an environment, and shows each is a read of a `Run` local, the compares, the one or two
+stores, or one of the three existing calls through the pointers.
 
 After the spawn (whether the fork succeeded or failed), the parent zeroes the given values' bytes and
 frees the whole native block (copy-on-write keeps the child's copy intact, as for argv today).
 
 **Test host** (`RedactingPty.TestHost`), new options:
 - `--env-file FILE`: the `Environment` dictionary from a file the test writes (one `NAME=VALUE` per
-  line, split at the first `=`); an empty file is an empty dictionary, distinct from no option. The
-  values never go in the host's argv, so the `/proc` test isn't undercut by the host's own cmdline.
+  line, split at the first `=`; a non-empty line with no `=` is a usage error, exit 121); an empty
+  file is an empty dictionary, distinct from no option. The values never go in the host's argv, so
+  the `/proc` test isn't undercut by the host's own cmdline.
 - `--report-own NAME`: after `Run` returns, the host writes `own-NAME=<value>` to stderr from
   `System.Environment.GetEnvironmentVariable` and, on Unix, `own-native-NAME=<value>` from libc
   `getenv` (empty when unset).
@@ -120,8 +137,8 @@ frees the whole native block (copy-on-write keeps the child's copy intact, as fo
 Either one runs the options overload; with only these options `Matchers` is empty (existing option
 combinations are unchanged). `RunHost` and `HostSession.Start` gain an optional seed for the host's own
 environment (`psi.Environment`), for inherited variables. Variable names in tests carry a GUID, so
-nothing is inherited from CI by accident. Children: `sh -c` on Unix, as the existing tests; no new
-`ChildModes` mode is needed.
+nothing is inherited from CI by accident. Children: `sh -c` on Unix, as the existing tests, except
+the `PATH` test below; no new `ChildModes` mode is needed.
 
 Tests, `[UnixPtyFact]` (both forkpty runners), through the host, unless marked:
 - `Environment_SetsVariableForTheChild` (`sh -c 'echo "got-$NAME"'`; and `--report-own NAME`: the
@@ -139,10 +156,9 @@ Tests, `[UnixPtyFact]` (both forkpty runners), through the host, unless marked:
 - `Environment_ValueStillRedactedInOutput` (the value given as a `StreamReplacement` too: the child
   prints it, the raw output never holds it, the text shows the replacement);
 - `Environment_ChildPathIsSearched` (a temp folder holding an executable `#!/bin/sh` script with a GUID
-  name, `PATH` given in `Environment` as that folder only: the script runs and prints its marker, exit
-  0; never skipped on Unix);
-- `Fallback_Environment_SetsVariableForTheChild`, `Fallback_Environment_OverridesAnInheritedVariable`
-  (`runner: "fallback"`, as the existing `Fallback_*` tests);
+  name, `PATH` given in `Environment` as that folder only, and the child argv is just that name (no
+  slash, no `sh -c`: `sh` isn't on that `PATH`, and a shell would move the search out of `execvp`; the
+  kernel runs the shebang): the script runs and prints its marker, exit 0; never skipped on Unix);
 - in process, `[Fact]`: each built-in runner on this OS, and `FallbackPty`, given each invalid name or
   value above (null through a custom dictionary): `ArgumentException`, and the argv (a command that
   creates a marker file: `sh -c` on Unix, `cmd /c` on Windows) never ran: the marker is absent.
@@ -153,7 +169,9 @@ Break-it-once: (1) drop the store in the child; `Environment_SetsVariableForTheC
 value into argv instead; `Environment_ValueNotInTheChildsCommandLine` fails. (3) Build the block from
 the given variables only; `Environment_InheritsUnoverriddenVariables` fails. (4) Call `execvpe` with the
 block instead of the store (glibc); `Environment_ChildPathIsSearched` fails. (5) Call `setenv` in the
-runner instead; `Environment_SetsVariableForTheChild`'s `own-native-` check fails.
+runner instead; `Environment_SetsVariableForTheChild`'s `own-native-` check fails. (6) On a host where
+the two Linux addresses differ, store to `environ` only; `Environment_SetsVariableForTheChild` fails
+there (if neither host has a copy, say so and that this check could not be run).
 
 ## Task 2: Windows and the fallback runner
 
@@ -173,7 +191,11 @@ runner instead; `Environment_SetsVariableForTheChild`'s `own-native-` check fail
   replaces an inherited `Path`), the separators and the double terminator. Only the wiring is left to
   CI.
 - **FallbackPty:** `ProcessStartInfo.Environment[name] = value` for each (it starts from what
-  `Process.Start` passes today, so inheritance there is unchanged).
+  `Process.Start` passes today, so inheritance there is unchanged). Tests, here and not in Task 1 so
+  that Task 1's commit stays green: `Fallback_Environment_SetsVariableForTheChild` and
+  `Fallback_Environment_OverridesAnInheritedVariable` (`[UnixPtyFact]`, `runner: "fallback"`, as the
+  existing `Fallback_*` tests), and `Fallback_Environment_SetsVariableForTheChild_Windows`
+  (`[WindowsPtyFact]`, `runner: "fallback"`, a `cmd /c` child).
 - Tests on Windows (`[WindowsPtyFact]`, `cmd /c echo got-%NAME%` children, the pattern the existing
   Windows tests use): `SetsVariable`, `Overrides`, `InheritsUnoverridden`, `NullOrEmpty`,
   `StillRedacted`. Not the `/proc` test, and not `ChildPathIsSearched`: `CreateProcessW` and
@@ -202,9 +224,9 @@ UTF-16 block would be read as ANSI (garbled names, no `SystemRoot`), and rely on
   applies to the output, that a `PATH` given there is searched for the program on Linux and macOS but
   not on Windows, and that `FallbackPty` applies it through `ProcessStartInfo.Environment`. The Fork
   safety section: the child branch is now the three calls plus, with an environment, one pointer store
-  to `environ`, whose address is resolved before the fork. The matchers paragraph's
-  `NotSupportedException` sentence names `Environment` too.
-- Code comments: `UnixPty`'s class comment (what the child branch runs, now with the store) and
+  (two where `__environ` and `environ` differ), whose addresses are resolved before the fork. The
+  matchers paragraph's `NotSupportedException` sentence names `Environment` too.
+- Code comments: `UnixPty`'s class comment (what the child branch runs, now with the stores) and
   `MatcherCarrier`'s "signature and code are frozen" (the signature still is; `Run`'s body now also
   builds the environment before the fork).
 - `RedactingPty.csproj`: `PackageValidationBaselineVersion` to 1.1.0 (the API only grows), the local
