@@ -1,0 +1,84 @@
+{
+  // Renovate for RedactingPty (owner, 2026-11-21), modelled on tswap's renovate.json5 (PR #308 there). The hosted Mend
+  // Renovate GitHub App runs it. RedactingPty is a published library that stays on the LTS .NET (10) until the owner
+  // moves it: a .NET major or a new SDK feature band is a decision, never an automatic update.
+  $schema: 'https://docs.renovatebot.com/renovate-schema.json',
+  extends: [
+    'config:recommended',
+    ':dependencyDashboard',
+    ':semanticCommitsDisabled',
+    'helpers:pinGitHubActionDigests', // actions pinned by SHA, with a version comment
+  ],
+  timezone: 'Europe/Berlin',
+  // Supply-chain guard: no PR until a release is 3 days old (yanked or compromised releases are usually withdrawn
+  // within days). A security fix skips the wait (vulnerabilityAlerts below).
+  minimumReleaseAge: '3 days',
+  prCreation: 'not-pending',
+  internalChecksFilter: 'strict',
+  // CI runs on pull_request, never on a Renovate branch before its PR exists, so the passed release-age check alone
+  // must be enough to open the PR; automerge still waits for CI.
+  internalChecksAsSuccess: true,
+  prConcurrentLimit: 5,
+  prHourlyLimit: 0,
+  labels: ['dependencies'],
+  // main has no ruleset requiring CI, so GitHub's own auto-merge could merge a PR whose CI hasn't finished. Renovate's
+  // own automerge merges only when every check on the branch is green.
+  platformAutomerge: false,
+  packageRules: [
+    {
+      description: 'NuGet: exact versions. The test projects use floating ranges (17.*, 2.*) today; Renovate pins them once, then moves the pins.',
+      matchDatasources: ['nuget'],
+      rangeStrategy: 'pin',
+    },
+    {
+      description: 'Majors are planned work (xunit v3, a .NET major): no PR until ticked on the Dependency Dashboard',
+      matchUpdateTypes: ['major'],
+      dependencyDashboardApproval: true,
+    },
+    {
+      description: 'Test packages, one PR; patches separate from minors, so an automerged patch never carries a minor along',
+      matchDatasources: ['nuget'],
+      matchPackageNames: ['Microsoft.NET.Test.Sdk', '/^xunit/'],
+      groupName: 'test packages',
+      separateMinorPatch: true,
+    },
+    {
+      description: 'Automerge what CI can judge: test package patches',
+      matchDatasources: ['nuget'],
+      matchPackageNames: ['Microsoft.NET.Test.Sdk', '/^xunit/'],
+      matchUpdateTypes: ['patch'],
+      automerge: true,
+      automergeType: 'pr',
+    },
+    {
+      description: 'GitHub Actions: only the first pin (recording the SHA the tag points to today) automerges',
+      matchManagers: ['github-actions'],
+      matchUpdateTypes: ['pinDigest'],
+      automerge: true,
+      automergeType: 'pr',
+    },
+    {
+      description: 'GitHub Actions: a digest change means a version tag moved. Never automerged, and no PR until ticked on the Dependency Dashboard. A new action version is an ordinary PR.',
+      matchManagers: ['github-actions'],
+      matchUpdateTypes: ['digest'],
+      automerge: false,
+      dependencyDashboardApproval: true,
+      addLabels: ['action-digest-move'],
+    },
+    {
+      description: 'global.json SDK: a new feature band or .NET 11 is a decision, shown on the Dependency Dashboard (the library stays on LTS)',
+      matchDatasources: ['dotnet-version'],
+      dependencyDashboardApproval: true,
+    },
+    {
+      description: 'global.json SDK: a patch inside the pinned feature band 10.0.3xx automerges (after the rule above, so it wins)',
+      matchDatasources: ['dotnet-version'],
+      matchNewValue: '/^10\\.0\\.3\\d\\d$/',
+      dependencyDashboardApproval: false,
+      automerge: true,
+      automergeType: 'pr',
+    },
+  ],
+  vulnerabilityAlerts: { enabled: true, addLabels: ['security'], minimumReleaseAge: null, prCreation: 'immediate' },
+  osvVulnerabilityAlerts: true,
+}
