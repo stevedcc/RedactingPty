@@ -36,15 +36,19 @@ jobs:
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
       - name: Pack
-        run: dotnet pack RedactingPty/RedactingPty.csproj -c Release -o out -p:Version=${{ steps.version.outputs.version }}
+        env:
+          PACKAGE_VERSION: ${{ steps.version.outputs.version }}
+        run: dotnet pack RedactingPty/RedactingPty.csproj -c Release -o out "-p:Version=$PACKAGE_VERSION"
 
       - uses: actions/upload-artifact@v4
         with:
           name: package
           path: out/*.nupkg
           if-no-files-found: error
+          overwrite: true # a "Re-run all jobs" uploads the artifact again under the same name
 
-  # Holds the write permissions; no checkout, so no repo code runs here.
+  # Holds the write permissions; no checkout, so no repo code runs here. Its actions are pinned by
+  # commit, since they run with these permissions.
   publish:
     needs: build
     runs-on: ubuntu-latest
@@ -55,7 +59,7 @@ jobs:
     env:
       PACKAGE_VERSION: ${{ needs.build.outputs.version }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: package
           path: out
@@ -69,7 +73,7 @@ jobs:
           subject-path: out/*.nupkg
 
       - name: NuGet login (OIDC -> short-lived API key)
-        uses: NuGet/login@v1
+        uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841 # v1.2.0
         id: login
         with:
           user: ${{ secrets.NUGET_USER }}
@@ -88,7 +92,7 @@ jobs:
             gh release upload "$GITHUB_REF_NAME" out/*.nupkg --clobber
           else
             prerelease=()
-            [[ "$PACKAGE_VERSION" == *-* ]] && prerelease=(--prerelease)
+            if [[ "$PACKAGE_VERSION" == *-* ]]; then prerelease=(--prerelease); fi
             gh release create "$GITHUB_REF_NAME" out/*.nupkg --verify-tag --title "$GITHUB_REF_NAME" "${prerelease[@]}" \
               --notes "RedactingPty $PACKAGE_VERSION: https://www.nuget.org/packages/RedactingPty/$PACKAGE_VERSION. The attached .nupkg is the attested build; see the README (Install) for how to check it."
           fi
