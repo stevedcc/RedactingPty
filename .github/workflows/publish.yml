@@ -14,12 +14,13 @@ env:
   DOTNET_CLI_TELEMETRY_OPTOUT: true
 
 jobs:
-  publish:
+  # Runs the repo's code (tests, pack) with a read-only token and no OIDC token.
+  build:
     runs-on: ubuntu-latest
     permissions:
-      id-token: write # NuGet Trusted Publishing's OIDC token exchange, and the provenance attestation's signing
-      attestations: write # store the build provenance attestation
-      contents: write # create the tag's GitHub release and attach the attested .nupkg
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -31,10 +32,33 @@ jobs:
         run: dotnet test RedactingPty.slnx
 
       - name: Derive package version from tag
-        run: echo "PACKAGE_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
       - name: Pack
-        run: dotnet pack RedactingPty/RedactingPty.csproj -c Release -o out -p:Version=${{ env.PACKAGE_VERSION }}
+        run: dotnet pack RedactingPty/RedactingPty.csproj -c Release -o out -p:Version=${{ steps.version.outputs.version }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package
+          path: out/*.nupkg
+          if-no-files-found: error
+
+  # Holds the write permissions; no checkout, so no repo code runs here.
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # NuGet Trusted Publishing's OIDC token exchange, and the provenance attestation's signing
+      attestations: write # store the build provenance attestation
+      contents: write # create the tag's GitHub release and attach the attested .nupkg
+    env:
+      PACKAGE_VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: package
+          path: out
 
       # Build provenance for the package (no .snupkg is built or pushed). The attested file is the one
       # attached to the GitHub release below (nuget.org adds its repository signature to its copy, so that
@@ -54,10 +78,11 @@ jobs:
         run: dotnet nuget push "out/*.nupkg" --api-key "${{ steps.login.outputs.NUGET_API_KEY }}" --source https://api.nuget.org/v3/index.json --skip-duplicate
 
       # The attested .nupkg on the tag's GitHub release: created here, or added to a release that
-      # already exists (a rerun replaces the file).
+      # already exists (a rerun replaces the file). GH_REPO: there is no checkout for gh to read it from.
       - name: Attach the attested package to the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" out/*.nupkg --clobber
