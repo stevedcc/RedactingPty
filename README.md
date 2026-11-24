@@ -20,6 +20,12 @@ AOT-compatible (`IsAotCompatible`; safe to consume from a NativeAOT-published bi
 dotnet add package RedactingPty
 ```
 
+Since 1.3.0 the package has a GitHub build provenance attestation. To check it, download the
+`.nupkg` from the version's [GitHub release](https://github.com/stevedcc/RedactingPty/releases) and run
+`gh attestation verify RedactingPty.<version>.nupkg --repo stevedcc/RedactingPty`. The copy on
+nuget.org carries nuget.org's repository signature (an added `.signature.p7s` entry), so it is a
+different file and does not verify against the attestation.
+
 ## Usage
 
 ```csharp
