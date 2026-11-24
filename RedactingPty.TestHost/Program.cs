@@ -4,6 +4,8 @@ using RedactingPty.TestHost;
 
 // Usage: RedactingPty.TestHost <linux|macos|windows|fallback> [OPTION]... -- ARGV...
 //        RedactingPty.TestHost child <prompt|busy|two-threads>   (a test child, see ChildModes)
+//        RedactingPty.TestHost child cmdline FILE [ARG]...        (Windows only: writes its own command
+//                                                                   line to FILE, see ChildModes)
 //
 // Runs ARGV through the named runner, constructed directly (PtyRunnerFactory would pick
 // FallbackPty because the tests redirect stdio), and exits with the child's exit code.
@@ -22,14 +24,21 @@ using RedactingPty.TestHost;
 //                      values never go in this host's argv.
 //   --report-own NAME  after Run returns, write own-NAME=<value> (System.Environment) and, on Unix,
 //                      own-native-NAME=<value> (libc getenv) to stderr; empty when unset
-// Any of -m, --throw-on-call, --hold-all, --release, --env-file, --report-own runs the RedactionOptions
-// overload (with only --env-file or --report-own, Matchers is empty).
+//   --windows-arguments-file FILE
+//                      RedactionOptions.WindowsArguments from FILE, read as UTF-8, the whole content
+//                      unchanged (an empty file is the empty string). The text never goes in this
+//                      host's argv.
+// Any of -m, --throw-on-call, --hold-all, --release, --env-file, --report-own, --windows-arguments-file
+// runs the RedactionOptions overload (with only --env-file, --report-own or --windows-arguments-file,
+// Matchers is empty).
 
 const int RunThrew = 120;
 const int UsageError = 121;
 
 if (args is ["child", var mode])
     return ChildModes.Run(mode);
+if (args is ["child", "cmdline", var file, ..])
+    return ChildModes.RecordCommandLine(file);
 
 Console.OutputEncoding = Encoding.UTF8;
 
@@ -44,6 +53,7 @@ var release = false;
 string? checkLog = null;
 Dictionary<string, string>? environment = null;
 List<string> reportOwn = [];
+string? windowsArguments = null;
 var useOptions = false;
 int i = 1;
 for (; i < args.Length && args[i] != "--"; i++)
@@ -90,6 +100,11 @@ for (; i < args.Length && args[i] != "--"; i++)
             useOptions = true;
             i++;
             break;
+        case "--windows-arguments-file" when i + 1 < args.Length:
+            windowsArguments = Encoding.UTF8.GetString(File.ReadAllBytes(args[i + 1]));
+            useOptions = true;
+            i++;
+            break;
         case "--report-own" when i + 1 < args.Length:
             reportOwn.Add(args[i + 1]);
             useOptions = true;
@@ -118,7 +133,8 @@ try
 {
     if (!useOptions)
         return runner.Run(argv, replacements);
-    // Only --env-file and --report-own: no matcher, as a caller that sets only an environment.
+    // Only --env-file, --report-own and --windows-arguments-file: no matcher, as a caller that sets only
+    // an environment or a command line.
     var onlyEnvironment = matcherFinds.Count == 0 && throwOnCall is null && !holdAll && !release;
     var options = new RedactionOptions
     {
@@ -126,6 +142,7 @@ try
         ReleaseWhenAwaitingInput = release,
         InputWaitChecked = checkLog is null ? null : result => File.AppendAllText(checkLog, result ? "true\n" : "false\n"),
         Environment = environment,
+        WindowsArguments = windowsArguments,
     };
     var exitCode = runner.Run(argv, replacements, options);
     foreach (var name in reportOwn)

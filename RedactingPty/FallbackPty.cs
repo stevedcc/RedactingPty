@@ -9,9 +9,11 @@ namespace RedactingPty;
 /// <see cref="Process"/> with redirected streams; TTY semantics (colours, interactive
 /// prompts) are not preserved.
 ///
-/// Directly executes <c>argv[0]</c> with the remaining elements as its argument list
-/// (no shell wrapper). <see cref="ProcessStartInfo.ArgumentList"/> handles platform-specific
-/// quoting automatically.
+/// Directly executes <c>argv[0]</c> with the remaining elements as its argument list, or, with
+/// <see cref="RedactionOptions.WindowsArguments"/> set, that text (no shell wrapper). The elements go
+/// through <see cref="ProcessStartInfo.ArgumentList"/>, each passed as a literal string (on Windows
+/// quoted for the C runtime: empty, any whitespace or <c>"</c>); <c>WindowsArguments</c> goes as
+/// <see cref="ProcessStartInfo.Arguments"/>, unchanged.
 ///
 /// Output is streamed through <see cref="StreamRedactor"/> using
 /// <see cref="Console.OutputEncoding"/> for decoding and re-encoding (no line-ending
@@ -33,9 +35,13 @@ internal sealed class FallbackPty : IPtyRunner
     {
         if (argv is not { Length: > 0 } || string.IsNullOrEmpty(argv[0]))
             throw new ArgumentException("argv must be non-empty and argv[0] must be a non-empty executable name.", nameof(argv));
+        // Off Windows, MatcherCarrier.For has already refused WindowsArguments.
+        var windowsArguments = (replacements as MatcherCarrier)?.Options.WindowsArguments;
+        WindowsCommandLine.ValidateArguments(windowsArguments, argv);
 
-        // Execute argv[0] directly (no shell wrapper). ProcessStartInfo.ArgumentList
-        // handles per-platform quoting so each element is passed as a literal string.
+        // Execute argv[0] directly (no shell wrapper). ProcessStartInfo.ArgumentList passes each
+        // element as a literal string (on Windows quoted for the C runtime); WindowsArguments goes as
+        // Arguments, unchanged.
         var startInfo = new ProcessStartInfo
         {
             FileName               = argv[0],
@@ -43,8 +49,13 @@ internal sealed class FallbackPty : IPtyRunner
             RedirectStandardOutput = true,
             RedirectStandardError  = true,
         };
-        foreach (var a in argv.AsSpan(1))
-            startInfo.ArgumentList.Add(a);
+        if (windowsArguments is not null)
+            startInfo.Arguments = windowsArguments;
+        else
+        {
+            foreach (var a in argv.AsSpan(1))
+                startInfo.ArgumentList.Add(a);
+        }
         // The child's environment: startInfo.Environment starts from what Process.Start passes
         // without it, so inheritance is unchanged; the given names replace inherited ones.
         if ((replacements as MatcherCarrier)?.Options.Environment is { Count: > 0 } environment)

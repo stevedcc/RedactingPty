@@ -31,6 +31,10 @@ internal sealed class MatcherCarrier : IReadOnlyList<StreamReplacement>
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(options.Matchers);
         ChildEnvironment.Validate(options.Environment);
+        // Every runner's options overload comes through here, so WindowsArguments is refused off Windows by
+        // all of them. The message never holds the text.
+        if (options.WindowsArguments is not null && !OperatingSystem.IsWindows())
+            throw new ArgumentException("RedactionOptions.WindowsArguments is supported on Windows only.", nameof(options));
         return new MatcherCarrier(replacements, options);
     }
 

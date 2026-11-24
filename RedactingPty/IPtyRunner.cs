@@ -10,7 +10,8 @@ public interface IPtyRunner
 {
     /// <summary>
     /// Directly executes <paramref name="argv"/>[0] with the remaining elements as its
-    /// argument list (no shell wrapper), writing filtered output to stdout.
+    /// argument list, or, with <see cref="RedactionOptions.WindowsArguments"/> set, that text
+    /// (no shell wrapper), writing filtered output to stdout.
     /// Returns the child's exit code.
     /// </summary>
     int Run(string[] argv, IReadOnlyList<StreamReplacement> replacements);
@@ -18,11 +19,13 @@ public interface IPtyRunner
     /// <summary>
     /// As <see cref="Run(string[], IReadOnlyList{StreamReplacement})"/>, with the
     /// <paramref name="options"/>' matchers applied alongside the plaintext replacements and
-    /// <see cref="RedactionOptions.Environment"/> set for the child.
+    /// <see cref="RedactionOptions.Environment"/> set for the child (and, on Windows,
+    /// <see cref="RedactionOptions.WindowsArguments"/> as its command line's arguments).
     /// The built-in runners implement it. The default delegates to the two-argument
     /// <see cref="Run(string[], IReadOnlyList{StreamReplacement})"/> only when the options ask for
     /// nothing (no <see cref="RedactionOptions.Matchers"/>, <see cref="RedactionOptions.ReleaseWhenAwaitingInput"/>
-    /// off, <see cref="RedactionOptions.Environment"/> null or empty) and otherwise throws: a runner
+    /// off, <see cref="RedactionOptions.Environment"/> null or empty, <see cref="RedactionOptions.WindowsArguments"/>
+    /// null) and otherwise throws: a runner
     /// that does not know the options must not silently do less. A runner that overrides this overload
     /// enforces that rule itself.
     /// </summary>
@@ -32,6 +35,7 @@ public interface IPtyRunner
     {
         ArgumentNullException.ThrowIfNull(options);
         return options.Matchers.Count == 0 && !options.ReleaseWhenAwaitingInput && options.Environment is null or { Count: 0 }
+               && options.WindowsArguments is null
             ? Run(argv, replacements)
             : throw new NotSupportedException("This IPtyRunner does not support RedactionOptions.");
     }
