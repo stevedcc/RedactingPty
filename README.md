@@ -79,8 +79,8 @@ rethrows the exception from `Run` once the child has exited (both, as an `Aggreg
 stdout and stderr both failed under `FallbackPty`). Nothing after the failure point is
 written to that stream. With redirected output (`FallbackPty`) stdout and stderr are redacted on
 their own: the other stream keeps being redacted and written. A runner that does not implement the `RedactionOptions` overload (the interface's
-default) throws `NotSupportedException` for any matcher, `ReleaseWhenAwaitingInput` or non-empty
-`Environment` rather than do less.
+default) throws `NotSupportedException` for any matcher, `ReleaseWhenAwaitingInput`, non-empty
+`Environment` or `WindowsArguments` rather than do less.
 
 ### Releasing held output at a prompt (1.1)
 
@@ -136,6 +136,43 @@ int exitCode = PtyRunnerFactory.Create().Run(["./migrate"], [new(secret, "[REDAC
   null or containing NUL (an empty value is allowed); on Windows, two names that differ only in case.
   Null or empty `Environment`: the child inherits the environment unchanged.
 
+### Passing a Windows command line yourself (1.3)
+
+On Windows a child gets one command-line string, and each program parses it by its own rules. The
+runners build it from `argv` for Microsoft's C runtime (`CommandLineToArgvW`). For a child that
+parses its command line by other rules, such as an MSYS2 program (Git Bash's `bash.exe` removes
+quotes and expands braces, globs and `@file` in unquoted words), the caller builds the arguments
+itself and passes them as `WindowsArguments`; the caller then owns the quoting:
+
+```csharp
+// argv is the program alone; the text after it is the caller's, passed unchanged.
+var options = new RedactionOptions { WindowsArguments = "-c \"echo done\"" };
+int exitCode = PtyRunnerFactory.Create().Run([@"C:\Program Files\Git\usr\bin\bash.exe"], replacements, options);
+```
+
+- The command line the child gets is the program token, then, when `WindowsArguments` is not empty,
+  one space and the text unchanged; empty: the program token alone. The runners never add, remove,
+  quote or escape anything in the text.
+- The program token is the runner's, as without the option: `WindowsPty` writes `argv[0]` quoted (with
+  `"` escaped) only when it is empty or holds whitespace or `"`; `FallbackPty` gives `argv[0]` to
+  `ProcessStartInfo.FileName` with the text as `Arguments`, and .NET trims the name, then wraps it in
+  `"` unless it already starts and ends with `"` (then it goes as it is). For an ordinary path the two
+  runners differ only in whether the program token is quoted; a program that parses its own name by
+  other rules is the caller's concern. The program is found as before (`CreateProcess` with no
+  application name).
+- **The text is the child's command line.** Anyone who can open the child process can read it, and so
+  can anything that records process command lines (process-creation auditing, for example). A secret
+  belongs in `Environment` (1.2), not here; a caller that puts one here takes that exposure, as it
+  would through `argv`.
+- `ArgumentException`, before anything starts: `WindowsArguments` set on any OS but Windows (every
+  built-in runner checks it), set while `argv` has more than one element (choose one form), or
+  holding NUL (`CreateProcess` would cut the line there). CR, LF and every other character are
+  allowed.
+- `CreateProcess` takes at most 32,767 characters of command line; a longer one fails at the start
+  with the runner's `CreateProcess failed` error (or .NET's). It is not validated beforehand.
+- `RedactionOptions.ToString()` shows only the text's length (`WindowsArguments = <N characters>`),
+  never the text.
+
 ## Platform support
 
 | Platform | Implementation | Mechanism |
@@ -149,6 +186,11 @@ The factory falls back to `FallbackPty` whenever stdin, stdout, or stderr is
 redirected: PTY master bytes would corrupt a downstream pipe consumer, a PTY cannot
 half-close its input side (the child would hang waiting for EOF), and a PTY merges
 stderr into stdout, which would silently ignore a stderr redirect.
+
+Both Windows runners quote an argument that is empty or holds any whitespace (`char.IsWhiteSpace`:
+CR, LF, vertical tab, form feed, Unicode spaces) or `"`, as .NET's `ProcessStartInfo.ArgumentList`
+does, so they build the same command line (since 1.3; before, `WindowsPty` quoted only for space, tab
+and `"`).
 
 ## Design notes
 
