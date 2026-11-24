@@ -230,7 +230,7 @@ internal sealed partial class WindowsPty : IPtyRunner
             // ProcessStartInfo.ArgumentList). No cmd.exe wrapper is needed;
             // we execute argv[0] directly so argument structure is preserved exactly.
             // With WindowsArguments: argv[0] quoted the same way, then the caller's text unchanged.
-            var cmdStr = windowsArguments is null ? WindowsCommandLine.Build(argv)
+            var cmdStr = true ? WindowsCommandLine.Build(argv)
                 : windowsArguments.Length == 0 ? WindowsCommandLine.Build([argv[0]])
                 : WindowsCommandLine.Build([argv[0]]) + " " + windowsArguments;
             var cmdLine = new char[cmdStr.Length + 1]; // +1 for null terminator
