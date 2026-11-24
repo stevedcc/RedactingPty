@@ -8,7 +8,23 @@ needs this release before its Task 4. Read `README.md` ("Usage", "Setting the ch
 "Platform support", "Testing"), `docs/briefs/r3-child-environment.md` (the last change of this shape),
 `RedactingPty/RedactionOptions.cs`, `RedactingPty/IPtyRunner.cs`, `RedactingPty/MatcherCarrier.cs`,
 `RedactingPty/WindowsPty.cs`, `RedactingPty/FallbackPty.cs`, `RedactingPty.TestHost/Program.cs` and
-`RedactingPty.Tests/PtyRunnerTests.Environment.cs` (the Windows tests and `BuildWindowsBlock`'s unit tests).
+`RedactingPty.Tests/PtyRunnerTests.Environment.cs` (the Windows tests, `Environment_ChildPathIsSearched`,
+`TestHost_EnvFileLineWithoutEquals_UsageError_NothingStarted` and `BuildWindowsBlock`'s unit tests).
+
+**Review history.** Round 1 (GLM-5.3, MiMo): both "Ready to implement: no". Folded in: the quoting moves
+out of the `[SupportedOSPlatform("windows")]` `WindowsPty` into a platform-neutral internal class, so the
+cross-platform unit tests build warning-free (both, CA1416); the README says the text is the child's
+command line, readable by others, and points to `Environment` for secrets (GLM I2, MiMo M-5); the
+non-Windows test uses a one-element argv, so only the OS check can throw (MiMo I-1); the exit-121 test
+goes through `HostSession` (GLM M1); `FallbackPty`'s program token is stated exactly (GLM M2); the test
+host's usage comment, the stale XML and code comments are listed (GLM M4, MiMo M-5); the command-line
+length limit is stated, not validated (GLM M5); the Windows test's argv is pinned (MiMo M-1); the
+citations carry full revisions and paths (MiMo M-2); the failure-text rule names what it covers (MiMo
+M-3); the recorded-line test quotes its file path (MiMo M-4); the NUL check has a place (MiMo M-6);
+CI-only break-it-once checks are recorded as deferred. Rejected: GLM M3 (the generated `PrintMembers`
+prints public members only, so the internal `InputWaitChecked` was never printed; C# records spec,
+"public non-static fields and readable properties"); MiMo M-2's line correction for `winsup.h` (line 137 is
+right at the pinned revision; the path was what was missing).
 
 Rules: test first (watch each test fail for the right reason), one commit per task, `dotnet build
 RedactingPty.slnx` warning-free and `dotnet test RedactingPty.slnx` green after each commit. No new
@@ -16,44 +32,59 @@ NuGet packages in the library. Never download or install an SDK or a toolchain (
 DOTNET_ROOT=$HOME/dotnet PATH=$HOME/dotnet:$PATH`). Nothing needs `sudo`. Always build from clean when
 switching between a JIT and a NativeAOT test host. Commits end with
 `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`, explicit paths, no push, merge or rebase.
-A break-it-once check per key test, named in the commit message. Never change an existing test's
+A break-it-once check per key test, named in the commit message (a Windows-only one is written down as
+"to be run on CI by the controller", never as run). Never change an existing test's
 assertion; this brief changes none (it adds tests, a test-host option and a test-child mode). The
 Windows tests can't run here: CI runs them (Windows, JIT Debug, JIT Release and NativeAOT hosts); say so
-in each commit message that adds one. Stop and report when the brief can't be built as written. No test
-failure text or exception message contains a test's argument text beyond the fixed markers below.
+in each commit message that adds one. Stop and report when the brief can't be built as written. No exception message the library throws
+contains argument or `WindowsArguments` text; tests print no secret-like text in custom failure messages
+(the `ToString` test's `secret-marker-7Hq` stays out of its failure text). `Assert.Equal` on the fixed,
+non-secret test command lines below is fine.
 
 ## Why
 
 1. **A caller that must build the command line itself.** On Windows a child gets one command-line
    string, and each program parses it by its own rules. Both runners build it for Microsoft's C runtime
    (`CommandLineToArgvW`): `WindowsPty` with its own `BuildWindowsCommandLine` (`WindowsPty.cs:228`,
-   `402-450`), `FallbackPty` through `ProcessStartInfo.ArgumentList` (`FallbackPty.cs:46-47`). Programs
+   `402-450`; the class is `[SupportedOSPlatform("windows")]`, line 15), `FallbackPty` through `ProcessStartInfo.ArgumentList` (`FallbackPty.cs:46-47`). Programs
    with other rules get a different argv: MSYS2 programs (Git Bash) remove quotes and expand braces,
    globs and `@file` in unquoted words, and treat `\\` inside double quotes as an escape (tswap T55 cites
    the msys2-runtime source). tswap T55 quotes for MSYS2 itself, so it needs a way to pass its own text.
 2. **The two Windows runners build different command lines.** `WindowsPty` quotes an argument only when
    it is empty or holds a space, tab or `"` (`QuoteNeededChars`, `WindowsPty.cs:417`); .NET quotes when
-   it is empty or holds any `char.IsWhiteSpace` character or `"` (dotnet/runtime `release/10.0`
-   cb8d459, `PasteArguments.cs:23` and `81-93`). An argument holding LF reaches a ConPTY child unquoted
+   it is empty or holds any `char.IsWhiteSpace` character or `"` (dotnet/runtime `release/10.0` at
+   cb8d4594715a7caadaa9f946323c69c7de37c211,
+   `src/libraries/System.Private.CoreLib/src/System/PasteArguments.cs:23` and `81-93`). An argument holding LF reaches a ConPTY child unquoted
    and a redirected one quoted. A C-runtime child parses both the same, but MSYS2 ends a word at CR and
-   LF too (msys2-runtime `winsup.h:137`, `issep` is `" \t\n\r"`), so tswap #402's line-break values arrive
+   LF too (msys2-runtime tag `msys2-3.6.12`, commit 50c44b7,
+   `winsup/cygwin/local_includes/winsup.h:137`, `issep` is `" \t\n\r"`, used as the end of a word at
+   `winsup/cygwin/dcrt0.cc:320` and `343`), so tswap #402's line-break values arrive
    cut on the ConPTY leg only.
 
 ## Task 1: `WindowsPty` quotes like .NET
 
-`QuoteNeededChars` and the `IndexOfAny` test in `WindowsQuoteArg` are replaced by .NET's rule: quote when
+**Move the quoting out of `WindowsPty` first** (a move with no behaviour change, in the same commit as
+the rest of this task): a new `RedactingPty/WindowsCommandLine.cs`, `internal static class
+WindowsCommandLine` with **no** platform attribute (the `ChildEnvironment` precedent), holding
+`internal static string Build(IReadOnlyList<string> argv)` (today's `BuildWindowsCommandLine`) and
+`internal static string QuoteArgument(string argument)` (today's `WindowsQuoteArg`). `WindowsPty` calls
+`WindowsCommandLine.Build` and keeps no copy; the doc comments move with the code. The cross-platform
+tests call `WindowsCommandLine`, never `WindowsPty`, so the build stays CA1416-clean.
+
+`QuoteNeededChars` and the `IndexOfAny` test in `QuoteArgument` are replaced by .NET's rule: quote when
 the argument is empty, or holds `"`, or holds a character for which `char.IsWhiteSpace` is true. That is
 exactly these 25 (checked by enumerating `char.IsWhiteSpace` over U+0000-U+FFFF on .NET 11.0.0; .NET 10
 has the same set): U+0009-U+000D (tab, LF, vertical tab, form feed, CR), U+0020, U+0085, U+00A0, U+1680,
 U+2000-U+200A, U+2028, U+2029, U+202F, U+205F, U+3000. The escaping inside the quotes is unchanged (it
 already matches `PasteArguments.cs:30-77`: backslashes doubled before a `"` and before the closing quote,
 `"` as `\"`). Use `char.IsWhiteSpace` itself, not a copied list. `argv[0]` goes through the same function
-as today (CreateProcess reads a quoted module name the same way). Update `BuildWindowsCommandLine`'s doc
-comment ("spaces, tabs, or double-quotes" becomes "any whitespace (`char.IsWhiteSpace`) or a double quote,
-as .NET's `ProcessStartInfo.ArgumentList`").
+as today (CreateProcess reads a quoted module name the same way). Update `Build`'s doc comment
+("spaces, tabs, or double-quotes" becomes "any whitespace (`char.IsWhiteSpace`) or a double quote, as
+.NET's `ProcessStartInfo.ArgumentList`") and the call-site comment in `WindowsPty.Run` (today lines
+224-227, "args that contain spaces or quotes").
 
-Make `BuildWindowsCommandLine` `internal` and unit-test it cross-platform (`[Fact]`,
-`WindowsCommandLineTests`), as R3 did for `BuildWindowsBlock`:
+Unit-test `WindowsCommandLine.Build` cross-platform (`[Fact]`, `WindowsCommandLineTests`), as R3 did for
+`BuildWindowsBlock`:
 
 | argv (C# literals) | Command line |
 |---|---|
@@ -72,17 +103,19 @@ Make `BuildWindowsCommandLine` `internal` and unit-test it cross-platform (`[Fac
 CR, vertical-tab and form-feed rows must fail.
 
 On Windows CI (`[WindowsPtyFact]`), through the host: a new test-child mode (below) records the command
-line it was started with. For each argv `[child, "a" + c + "b"]` (each of the 25 characters) and
-`["x y", "a\"b", "a b\\", ""]`, run the child once with `windows` and once with `fallback`; assert the
-part after the program token is identical for both runners, and that `CommandLineToArgvW` (shell32,
-P/Invoke in the test) of each recorded line gives back exactly the child's arguments. Break-it-once:
-the same revert; the LF case of this test must fail (on CI, the controller's).
+line it was started with. The runner's argv is `[HostPath, "child", "cmdline", file, ..args]`, with
+`args` = `["a" + c + "b"]` for each of the 25 characters (25 runs) and `["x y", "a\"b", "a b\\", ""]`
+(one run); `file` is a fresh file in the test's temp folder. Run each once with `windows` and once with
+`fallback`; assert the text after the program token is identical for both runners, and that
+`CommandLineToArgvW` (shell32, P/Invoke in the test) of each recorded line, without its first element,
+equals `["child", "cmdline", file, ..args]`. Break-it-once: the same revert; the LF case of this test must
+fail (to be run on CI by the controller).
 
 **Test child** `RedactingPty.TestHost child cmdline FILE [ARG]...` (Windows only; elsewhere exit 121):
 writes `GetCommandLineW()` (kernel32, `LibraryImport`, AOT-safe) to `FILE` as UTF-8 without BOM and exits
 0. It ignores its other arguments. Extend `args is ["child", var mode]` to allow this form; the existing
 modes stay as they are. The file, not the PTY output, carries the result, so ConPTY's rendering can't
-change it.
+change it. Add the mode to `Program.cs`'s header usage comment, beside the existing `child` line.
 
 Also clear the `cmdLine` buffer (`Array.Clear`) once `CreateProcess` has returned, whether it succeeded
 or not: it holds the child's arguments, which may be secrets (the `cmdStr` string can't be cleared; say
@@ -104,17 +137,27 @@ public string? WindowsArguments { get; init; }
   space and the text unchanged. Empty: the program token alone. The runners never add, remove, quote or
   escape anything in the text.
 - The program token is the runner's, as today: `WindowsPty` writes `argv[0]` through
-  `WindowsQuoteArg` (quoted only when it holds whitespace or `"`, or is empty); `FallbackPty` gives
-  `argv[0]` to `ProcessStartInfo.FileName` with `Arguments = WindowsArguments`, and .NET trims it and
-  wraps it in `"` unless it is already quoted (dotnet/runtime `Process.Windows.cs:670-691`), then adds a
-  space and `Arguments` when not empty (`ProcessStartInfo.cs:207-215`). So the two runners may differ in
-  the program token's quotes only; a program that parses its own name by other rules is the caller's
-  concern. The program is found as today (`CreateProcess` with no application name).
+  `WindowsCommandLine.QuoteArgument` (quoted, with `"` escaped, only when it holds whitespace or `"`,
+  or is empty); `FallbackPty` gives `argv[0]` to `ProcessStartInfo.FileName` with
+  `Arguments = WindowsArguments`, and .NET trims it, then wraps it in `"` unless it already starts and
+  ends with `"` (then it goes as it is, unescaped) (dotnet/runtime `release/10.0` at cb8d4594715a,
+  `src/libraries/System.Diagnostics.Process/src/System/Diagnostics/Process.Windows.cs:670-691`), then adds
+  a space and `Arguments` when not empty (`.../ProcessStartInfo.cs:207-215`). So for an ordinary path the
+  two runners differ only in whether the program token is quoted; a program that parses its own name by
+  other rules is the caller's concern. The program is found as today (`CreateProcess` with no
+  application name).
+- **The text is the child's command line.** Whoever can read the child process (on Windows anyone who
+  can open it, and anything that records process command lines, such as process-creation auditing) reads
+  it. A secret belongs in `Environment` (1.2), not here; a caller that puts one here takes that exposure,
+  as it would through argv.
+- `CreateProcess` takes at most 32,767 characters of command line; a longer one fails at the start with
+  the runner's existing `CreateProcess failed` (or .NET's) error. Not validated beforehand; say so in the
+  remarks.
 - **Validation** (`ArgumentException`, nothing started): `WindowsArguments` set on any OS but Windows (in
   `MatcherCarrier.For`, so every runner's options overload checks it, `LinuxPty`, `MacOSPty` and
-  `FallbackPty` alike); set while `argv` has more than one element (in `WindowsPty.Run` and
-  `FallbackPty.Run`, beside the existing `argv[0]` check: the caller must choose one form); holding NUL
-  (`CreateProcess` would cut the line). CR, LF and every other character are allowed: inside quotes they
+  `FallbackPty` alike); set while `argv` has more than one element, and holding NUL (`CreateProcess`
+  would cut the line): both in `WindowsPty.Run` and `FallbackPty.Run`, beside the existing `argv[0]`
+  check (the caller must choose one form). CR, LF and every other character are allowed: inside quotes they
   are ordinary for many parsers.
 - **`ToString`:** the record's generated `ToString` would print the text, which may hold secrets. Add a
   `PrintMembers` override (sealed record: `private bool PrintMembers(StringBuilder builder)`) that
@@ -124,7 +167,7 @@ public string? WindowsArguments { get; init; }
 - **`IPtyRunner`'s default overload** (`IPtyRunner.cs:31-37`) delegates only when, in addition to the
   current conditions, `WindowsArguments` is null, and otherwise throws `NotSupportedException`; its XML doc
   names `WindowsArguments` too.
-- `WindowsPty` builds `BuildWindowsCommandLine([argv[0]])`, then `" " + WindowsArguments` when not empty,
+- `WindowsPty` builds `WindowsCommandLine.Build([argv[0]])`, then `" " + WindowsArguments` when not empty,
   into the same buffer it clears after `CreateProcess` (Task 1). `FallbackPty` sets `Arguments` and adds
   nothing to `ArgumentList`.
 
@@ -136,17 +179,21 @@ R3 options) `Matchers` is empty, as `--env-file` alone does.
 Tests:
 
 - `[WindowsPtyFact]`, `windows` and `fallback` runners: argv `[HostPath]`, `WindowsArguments`
-  `child cmdline <file> "a b" plain "q\"x" "line` + LF + `break"` (a file in the test's temp folder, no
-  spaces in its path): the recorded command line is the program token, one space and exactly that text
-  (byte for byte), and the program token is `HostPath` or `"HostPath"`. `WindowsArguments = ""` with argv
-  `[HostPath]`: the child is the host with no arguments, which exits 121 (usage); the runner returns 121
-  (the program token alone reached the child).
+  `child cmdline "<file>" "a b" plain "q\"x" "line` + LF + `break"` (`<file>` a fresh file in the test's
+  temp folder, in quotes so a temp path with a space still works; a temp path never holds `"`): the
+  recorded command line is the program token, one space and exactly that text (byte for byte), and the
+  program token is `HostPath` or `"HostPath"`. `WindowsArguments = ""` with argv `[HostPath]`: the child
+  is the host with no arguments, which exits 121 (usage), and the runner returns 121 (the program token
+  alone reached the child). This one goes through `HostSession.Start` and its wait, not `RunHost` (which
+  asserts the exit code is not 120 or 121), as `TestHost_EnvFileLineWithoutEquals_UsageError_NothingStarted`
+  does.
 - `[WindowsPtyFact]`: argv `[cmd, "/c", "echo x>marker"]` with `WindowsArguments = "x"`, and
   `WindowsArguments` holding NUL with argv `[cmd]`: `ArgumentException` from both runners, the marker
   absent (the R3 pattern, `PtyRunnerTests.Environment.cs:459-470`).
 - In process, `[Fact]` on Linux and macOS: each built-in runner for this OS and `FallbackPty`, given
-  `WindowsArguments = "x"` with an argv that creates a marker (`sh -c`): `ArgumentException`, marker
-  absent.
+  `WindowsArguments = "x"` with a **one-element** argv that would create a marker (an executable
+  `#!/bin/sh` script in a temp folder, run by its full path, as `Environment_ChildPathIsSearched` builds
+  one): `ArgumentException`, marker absent. One element, so the argv-form check can't be what throws.
 - `[Fact]`: `new RedactionOptions { WindowsArguments = "secret-marker-7Hq" }.ToString()` does not contain
   `secret-marker-7Hq` and contains `WindowsArguments = <17 characters>`; with null it contains
   `WindowsArguments = null`; it still names `Matchers`, `ReleaseWhenAwaitingInput` and `Environment`.
@@ -157,18 +204,29 @@ Break-it-once: (1) `WindowsPty` ignores `WindowsArguments`: the recorded-line te
 controller's); (2) `FallbackPty` adds it to `ArgumentList` instead of `Arguments`: the same test fails for
 `fallback` (the text arrives quoted); (3) drop the `PrintMembers` override: the `ToString` test fails;
 (4) drop the default overload's new condition: `CustomRunner_DefaultOverload_WithWindowsArgumentsThrows`
-fails; (5) drop the non-Windows check: the Linux test fails here.
+fails; (5) drop the non-Windows check in `MatcherCarrier.For`: the Linux test fails here (the script runs
+and creates the marker); (6) drop the NUL check: the Windows NUL case fails (on CI). (1), (2) and (6) are
+to be run on CI by the controller.
+
+**Test host** documentation: add `--windows-arguments-file FILE` to `Program.cs`'s header Options list
+and to the sentence naming the options that run the `RedactionOptions` overload.
 
 ## Task 3: docs and the version
 
 - README, under Usage: "### Passing a Windows command line yourself (1.3)": what `WindowsArguments` does,
   the contract above (verbatim tail, the runner's program token, `argv` of one element, NUL refused,
-  Windows only, not in `ToString`), when to use it (a child that doesn't parse its command line by the C
+  Windows only, not in `ToString`, the length limit), that **the text is the child's command line**,
+  readable by anyone who can open the child process and by anything that records command lines, so
+  secrets go in `Environment` instead, when to use it (a child that doesn't parse its command line by the C
   runtime's rules, such as an MSYS2 program; the caller then owns the quoting), and a short example. In
   "Platform support", one sentence: both Windows runners quote an argument holding any whitespace or `"`,
   as .NET's `ProcessStartInfo.ArgumentList` does (since 1.3; before, `WindowsPty` quoted only for space,
   tab and `"`). In the matchers paragraph, the `NotSupportedException` sentence names `WindowsArguments`
   too.
+- Stale text to update: `FallbackPty`'s class XML ("`ProcessStartInfo.ArgumentList` handles
+  platform-specific quoting automatically", `FallbackPty.cs:12-14`, and the comment at lines 37-38), the
+  `Run(argv, replacements)` summaries of both Windows runners ("with the remaining elements as its argument
+  list") and `IPtyRunner.Run`'s: each adds "or, with `RedactionOptions.WindowsArguments` set, that text".
 - `RedactingPty.csproj`: `PackageValidationBaselineVersion` to 1.2.0 (the API only grows), the local
   `<Version>` placeholder to `1.3.0-local`, and the comments that name the baseline say 1.2.0. The release
   is tag `v1.3.0` (the publish workflow takes the version from the tag); the controller tags it.
