@@ -143,13 +143,16 @@ internal sealed partial class WindowsPty : IPtyRunner
 
     /// <summary>
     /// Directly executes <paramref name="argv"/>[0] with the remaining elements as its
-    /// argument list inside a ConPTY (no shell wrapper), writing redacted output to stdout.
+    /// argument list, or, with <see cref="RedactionOptions.WindowsArguments"/> set, that text,
+    /// inside a ConPTY (no shell wrapper), writing redacted output to stdout.
     /// Returns the child process's exit code.
     /// </summary>
     public int Run(string[] argv, IReadOnlyList<StreamReplacement> replacements)
     {
         if (argv is not { Length: > 0 } || string.IsNullOrEmpty(argv[0]))
             throw new ArgumentException("argv must be non-empty and argv[0] must be a non-empty executable name.", nameof(argv));
+        var windowsArguments = (replacements as MatcherCarrier)?.Options.WindowsArguments;
+        WindowsCommandLine.ValidateArguments(windowsArguments, argv);
 
         int consoleCols, consoleRows;
         try { consoleCols = Console.WindowWidth; consoleRows = Console.WindowHeight; }
@@ -226,7 +229,10 @@ internal sealed partial class WindowsPty : IPtyRunner
             // wrapping for args that are empty or contain any whitespace or a quote, as .NET's
             // ProcessStartInfo.ArgumentList). No cmd.exe wrapper is needed;
             // we execute argv[0] directly so argument structure is preserved exactly.
-            var cmdStr = WindowsCommandLine.Build(argv);
+            // With WindowsArguments: argv[0] quoted the same way, then the caller's text unchanged.
+            var cmdStr = windowsArguments is null ? WindowsCommandLine.Build(argv)
+                : windowsArguments.Length == 0 ? WindowsCommandLine.Build([argv[0]])
+                : WindowsCommandLine.Build([argv[0]]) + " " + windowsArguments;
             var cmdLine = new char[cmdStr.Length + 1]; // +1 for null terminator
             cmdStr.CopyTo(0, cmdLine, 0, cmdStr.Length);
 

@@ -25,6 +25,22 @@ internal static class WindowsCommandLine
         return string.Join(' ', parts);
     }
 
+    /// <summary>
+    /// <see cref="RedactionOptions.WindowsArguments"/>' rules for the Windows runners, beside their
+    /// <c>argv[0]</c> check: with the text set, <paramref name="argv"/> must have one element, and the text
+    /// must hold no NUL. The messages never hold the text.
+    /// </summary>
+    internal static void ValidateArguments(string? windowsArguments, string[] argv)
+    {
+        if (windowsArguments is null)
+            return;
+        if (argv.Length > 1)
+            throw new ArgumentException(
+                "RedactionOptions.WindowsArguments is set and argv has more than one element: give the arguments in one form only.", nameof(argv));
+        if (windowsArguments.Contains('\0'))
+            throw new ArgumentException("RedactionOptions.WindowsArguments contains NUL.", "options");
+    }
+
     /// <summary>One argument as <see cref="Build"/> writes it.</summary>
     internal static string QuoteArgument(string argument)
     {

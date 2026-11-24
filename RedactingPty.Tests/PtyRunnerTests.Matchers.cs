@@ -143,6 +143,17 @@ public partial class PtyRunnerTests
     }
 
     [Fact]
+    public void CustomRunner_DefaultOverload_WithWindowsArgumentsThrows()
+    {
+        var runner = new OneDotZeroRunner();
+        IPtyRunner asInterface = runner;
+
+        Assert.Throws<NotSupportedException>(() => asInterface.Run(["x"], [], new RedactionOptions { WindowsArguments = "y" }));
+        Assert.Throws<NotSupportedException>(() => asInterface.Run(["x"], [], new RedactionOptions { WindowsArguments = "" }));
+        Assert.Equal(0, runner.Calls);
+    }
+
+    [Fact]
     public void CustomRunner_DefaultOverload_NullOptions_ThrowsArgumentNull()
     {
         IPtyRunner runner = new OneDotZeroRunner();

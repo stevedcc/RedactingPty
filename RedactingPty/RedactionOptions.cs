@@ -1,3 +1,5 @@
+using System.Text;
+
 namespace RedactingPty;
 
 /// <summary>Settings for <see cref="IPtyRunner.Run(string[], IReadOnlyList{StreamReplacement}, RedactionOptions)"/>.</summary>
@@ -38,6 +40,58 @@ public sealed record RedactionOptions
     /// </remarks>
     public IReadOnlyDictionary<string, string>? Environment { get; init; }
 
+    /// <summary>
+    /// Windows only: the command line's arguments as the caller built them, passed verbatim after the
+    /// program instead of argv[1..] quoted by the runner. Null: argv as before.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The command line the child gets is the program token, then, when this is not empty, one space and
+    /// the text unchanged; empty: the program token alone. The runners never add, remove, quote or escape
+    /// anything in the text. The program token is the runner's, as without this option: <c>WindowsPty</c>
+    /// writes <c>argv[0]</c> quoted (with <c>"</c> escaped) only when it is empty or holds whitespace or
+    /// <c>"</c>; the pipe runner (<c>FallbackPty</c>) gives <c>argv[0]</c> to
+    /// <see cref="System.Diagnostics.ProcessStartInfo.FileName"/> with this text as
+    /// <see cref="System.Diagnostics.ProcessStartInfo.Arguments"/>, and .NET trims the name, then wraps it
+    /// in <c>"</c> unless it already starts and ends with <c>"</c> (then it goes as it is, unescaped). So
+    /// for an ordinary path the two runners differ only in whether the program token is quoted; a program
+    /// that parses its own name by other rules is the caller's concern. The program is found as without
+    /// this option (<c>CreateProcess</c> with no application name).
+    /// </para>
+    /// <para>
+    /// <b>The text is the child's command line</b>: whoever can read the child process (on Windows anyone
+    /// who can open it, and anything that records process command lines, such as process-creation
+    /// auditing) reads it. A secret belongs in <see cref="Environment"/>, not here; a caller that puts one
+    /// here takes that exposure, as it would through argv.
+    /// </para>
+    /// <para>
+    /// <c>CreateProcess</c> takes at most 32,767 characters of command line; a longer one fails at the
+    /// start with the runner's <c>CreateProcess failed</c> error (or .NET's). It is not validated
+    /// beforehand.
+    /// </para>
+    /// <para>
+    /// <see cref="ArgumentException"/>, before anything is started: this is set on any OS but Windows (every
+    /// built-in runner checks it), or set while <c>argv</c> has more than one element (choose one form),
+    /// or holds NUL (<c>CreateProcess</c> would cut the line there). CR, LF and every other character are
+    /// allowed. <see cref="ToString"/> shows only the text's length, never the text; record equality
+    /// compares it ordinally.
+    /// </para>
+    /// </remarks>
+    public string? WindowsArguments { get; init; }
+
     /// <summary>Called after each input-wait check with its result (the test host's seam).</summary>
     internal Action<bool>? InputWaitChecked { get; init; }
+
+    // Replaces the generated PrintMembers so ToString never shows the WindowsArguments text (it may hold
+    // secrets). It prints every public property as the generated one does: a new public property must be
+    // added here.
+    private bool PrintMembers(StringBuilder builder)
+    {
+        builder.Append("Matchers = ").Append(Matchers);
+        builder.Append(", ReleaseWhenAwaitingInput = ").Append(ReleaseWhenAwaitingInput);
+        builder.Append(", Environment = ").Append(Environment);
+        builder.Append(", WindowsArguments = ");
+        builder.Append(WindowsArguments is null ? "null" : $"<{WindowsArguments.Length} characters>");
+        return true;
+    }
 }
