@@ -37,8 +37,6 @@ internal static class WindowsCommandLine
         if (argv.Length > 1)
             throw new ArgumentException(
                 "RedactionOptions.WindowsArguments is set and argv has more than one element: give the arguments in one form only.", nameof(argv));
-        if (windowsArguments.Contains('\0'))
-            throw new ArgumentException("RedactionOptions.WindowsArguments contains NUL.", "options");
     }
 
     /// <summary>One argument as <see cref="Build"/> writes it.</summary>
