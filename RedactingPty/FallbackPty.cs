@@ -50,7 +50,7 @@ internal sealed class FallbackPty : IPtyRunner
             RedirectStandardError  = true,
         };
         if (windowsArguments is not null)
-            startInfo.Arguments = windowsArguments;
+            startInfo.ArgumentList.Add(windowsArguments);
         else
         {
             foreach (var a in argv.AsSpan(1))
