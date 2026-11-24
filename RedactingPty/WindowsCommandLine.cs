@@ -80,7 +80,7 @@ internal static class WindowsCommandLine
     {
         foreach (char c in argument)
         {
-            if (char.IsWhiteSpace(c) || c == '"')
+            if (c is ' ' or '\t' or '"')
                 return true;
         }
         return false;
