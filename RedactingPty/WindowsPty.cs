@@ -223,9 +223,10 @@ internal sealed partial class WindowsPty : IPtyRunner
 
             // Build the command line for CreateProcess from argv using Windows quoting rules
             // (CommandLineToArgvW-compatible: backslash-quote for embedded quotes, double-quote
-            // wrapping for args that contain spaces or quotes). No cmd.exe wrapper is needed;
+            // wrapping for args that are empty or contain any whitespace or a quote, as .NET's
+            // ProcessStartInfo.ArgumentList). No cmd.exe wrapper is needed;
             // we execute argv[0] directly so argument structure is preserved exactly.
-            var cmdStr = BuildWindowsCommandLine(argv);
+            var cmdStr = WindowsCommandLine.Build(argv);
             var cmdLine = new char[cmdStr.Length + 1]; // +1 for null terminator
             cmdStr.CopyTo(0, cmdLine, 0, cmdStr.Length);
 
@@ -253,6 +254,10 @@ internal sealed partial class WindowsPty : IPtyRunner
                     creationFlags, envBlock, null,
                     ref si, out var pi);
             var createError = Marshal.GetLastWin32Error();
+            // The command line holds the child's arguments, which may be secrets: cleared whether or not
+            // CreateProcess succeeded. The cmdStr string it was copied from can't be cleared (as with the
+            // caller's environment strings).
+            Array.Clear(cmdLine);
             if (envBlock != 0)
             {
                 ZeroAndFree(envBlock, envBlockBytes);
@@ -396,56 +401,5 @@ internal sealed partial class WindowsPty : IPtyRunner
     {
         NativeMemory.Clear((void*)block, (nuint)bytes);
         Marshal.FreeHGlobal(block);
-    }
-
-    /// <summary>
-    /// Builds a Windows command line string from <paramref name="argv"/> using the quoting
-    /// rules required by <c>CommandLineToArgvW</c>: each argument containing spaces, tabs,
-    /// or double-quotes is wrapped in double-quotes; embedded double-quotes are escaped as
-    /// <c>\"</c>; backslashes immediately before a double-quote (or the closing quote) are
-    /// doubled. Arguments that need no quoting are appended verbatim.
-    /// </summary>
-    private static string BuildWindowsCommandLine(string[] argv)
-    {
-        var parts = new string[argv.Length];
-        for (int i = 0; i < argv.Length; i++)
-            parts[i] = WindowsQuoteArg(argv[i]);
-        return string.Join(' ', parts);
-    }
-
-    // Static to avoid allocating a new char[] on every call to WindowsQuoteArg.
-    private static readonly char[] QuoteNeededChars = [' ', '\t', '"'];
-
-    private static string WindowsQuoteArg(string arg)
-    {
-        // Empty arg must be quoted so it survives as an empty token.
-        if (arg.Length > 0 && arg.IndexOfAny(QuoteNeededChars) < 0)
-            return arg;
-
-        var sb = new System.Text.StringBuilder("\"");
-        int backslashes = 0;
-        foreach (char c in arg)
-        {
-            if (c == '\\')
-            {
-                backslashes++;
-            }
-            else if (c == '"')
-            {
-                // Each preceding backslash plus the quote itself must be escaped.
-                sb.Append('\\', backslashes * 2 + 1);
-                sb.Append('"');
-                backslashes = 0;
-            }
-            else
-            {
-                if (backslashes > 0) { sb.Append('\\', backslashes); backslashes = 0; }
-                sb.Append(c);
-            }
-        }
-        // Trailing backslashes before the closing quote must be doubled.
-        sb.Append('\\', backslashes * 2);
-        sb.Append('"');
-        return sb.ToString();
     }
 }

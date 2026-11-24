@@ -4,6 +4,8 @@ using RedactingPty.TestHost;
 
 // Usage: RedactingPty.TestHost <linux|macos|windows|fallback> [OPTION]... -- ARGV...
 //        RedactingPty.TestHost child <prompt|busy|two-threads>   (a test child, see ChildModes)
+//        RedactingPty.TestHost child cmdline FILE [ARG]...        (Windows only: writes its own command
+//                                                                   line to FILE, see ChildModes)
 //
 // Runs ARGV through the named runner, constructed directly (PtyRunnerFactory would pick
 // FallbackPty because the tests redirect stdio), and exits with the child's exit code.
@@ -30,6 +32,8 @@ const int UsageError = 121;
 
 if (args is ["child", var mode])
     return ChildModes.Run(mode);
+if (args is ["child", "cmdline", var file, ..])
+    return ChildModes.RecordCommandLine(file);
 
 Console.OutputEncoding = Encoding.UTF8;
 
